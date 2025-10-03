@@ -2198,10 +2198,10 @@ class PlanilhaValidator:
                 if self.emp_cod_tipo == "N":
                     if not cp_val.isdigit():
                         cell_cp.fill = COR_ERRO
-                        mensagens.append("CodProduto deve ser numérico")
+                        mensagens.append("CodProduto inválido (deve ser numérico)")
                     elif len(cp_val) > self.emp_cod_tamanho:
                         cell_cp.fill = COR_ERRO
-                        mensagens.append("CodProduto excede tamanho permitido")
+                        mensagens.append("CodProduto inválido (excede tamanho permitido)")
                     else:
                         cell_cp.fill = COR_VALIDO
                 elif self.emp_cod_tipo == "A":
