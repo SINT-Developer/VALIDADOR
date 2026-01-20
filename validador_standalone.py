@@ -236,7 +236,7 @@ class ValidadorApp:
         print("\nLINHAS POR ABA:")
         print("-" * 40)
         for r in resultados:
-            print(f"  {r['Planilha']:<20} {r.get('total', 0):>6} linhas")
+            print(f"  {r['Planilha']:<20} {r.get('lidas', 0):>6} linhas")
 
         print("\n" + "=" * 60)
         print(f"Status final: {status.upper()}")

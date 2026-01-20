@@ -741,9 +741,15 @@ class PlanilhaValidator:
         if sheet.title.upper() in ["EMPRESA", "RESULTADOS DAS VALIDAÇÕES"]:
             return
         sheet.protection.sheet = False
-        for row in sheet.iter_rows():
+        # OTIMIZAÇÃO: Aplicar borda apenas nas células com dados
+        max_row = sheet.max_row
+        max_col = sheet.max_column
+        if max_row <= 1 or max_col <= 0:
+            return
+        for row in sheet.iter_rows(min_row=1, max_row=max_row, min_col=1, max_col=max_col):
             for cell in row:
-                cell.border = BORDA
+                if cell.value is not None:
+                    cell.border = BORDA
         sheet.auto_filter.ref = sheet.dimensions
 
     def excluir_linhas_duplicadas_produtos(self, sheet, header):
@@ -751,13 +757,24 @@ class PlanilhaValidator:
         for key, idx in header.items():
             if key.lower() in ["duplicados", "resultado"]:
                 ignore_cols.add(idx)
+
+        # OTIMIZAÇÃO: Verificação rápida de linha vazia usando CodProduto
+        idx_codproduto = header.get("CodProduto")
+
         seen = {}
         rows_to_delete = []
         for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
-            if all(cell.value is None or str(cell.value).strip() == "" for cell in row):
+            # Verificação rápida de linha vazia
+            if idx_codproduto is not None:
+                first_val = row[idx_codproduto].value
+                if first_val is None or (isinstance(first_val, str) and not first_val.strip()):
+                    continue
+            elif row[0].value is None:
                 continue
+
+            # Criar tupla apenas com valores relevantes (otimizado)
             row_tuple = tuple(
-                self.get_valor_string(cell)
+                str(cell.value).strip() if cell.value is not None else ""
                 for idx, cell in enumerate(row)
                 if idx not in ignore_cols
             )
@@ -765,6 +782,8 @@ class PlanilhaValidator:
                 rows_to_delete.append(row[0].row)
             else:
                 seen[row_tuple] = row[0].row
+
+        # Deletar em ordem reversa para não afetar índices
         for r in sorted(rows_to_delete, reverse=True):
             sheet.delete_rows(r)
 
@@ -2135,94 +2154,84 @@ class PlanilhaValidator:
         sheet = self.wb["PRODUTOS"]
         # Obtém o header atual da planilha, sem forçar uma ordem específica
         header = self.get_header_map(sheet)
-        header_warning = "" # Inicializa a variável para evitar erros
+        header_warning = ""
 
-        # --- Trecho novo: Limpeza dos "0" indesejados ---
-        for col_name in header.keys():
-            if col_name in header:
-                col_index = header[col_name] + 1  # índice 1-based
-                for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row, min_col=col_index, max_col=col_index):
-                    for cell in row:
-                        if cell.value is not None and (cell.value == 0 or str(cell.value).strip() == "0"):
-                            cell.value = ""
-
-
-        # --- Fim do trecho novo ---
-
-        # Agora, em vez de usar sheet.max_column, posiciona a coluna RESULTADO com base no header corrigido:
-        result_col = len(header) + 1
-        header_result = sheet.cell(row=1, column=result_col, value="RESULTADO")
-        header_result.fill = PatternFill(start_color="000000", end_color="000000", fill_type="solid")
-        header_result.font = Font(color="FFFFFF", bold=True)
-        result_letter = get_column_letter(result_col)
-        sheet.auto_filter.ref = f"A1:{result_letter}1"
-        # Oculta todas as colunas à direita de RESULTADO, se houver
-        for col in range(result_col + 1, sheet.max_column + 1):
-            col_letter = get_column_letter(col)
-            sheet.column_dimensions[col_letter].hidden = True
-
-        
-
-
-
-
-
-        # Excluir linhas duplicadas (linhas idênticas, exceto "duplicados" e "RESULTADO")
+        # Excluir linhas duplicadas (linhas idênticas)
         self.excluir_linhas_duplicadas_produtos(sheet, header)
 
-        # Configuração de progresso granular
-        total_linhas_planilha = sheet.max_row - 1  # -1 para excluir cabeçalho
-        # Intervalo de atualização: a cada 1% ou no mínimo a cada 50 linhas
-        intervalo_progresso = max(50, total_linhas_planilha // 100) if total_linhas_planilha > 0 else 50
-        linha_atual = 0
-        ultimo_progresso_reportado = -1
-
-        total_linhas = 0
-        linhas_validas = 0
-        linhas_erros = 0
-        linhas_advertencias = 0
+        # PASSADA 1: Contagem de duplicados + limpeza de zeros (OTIMIZADO)
+        total_linhas_planilha = sheet.max_row - 1
         seen_codproduto = {}
         seen_codaux = {}
-        seen_produto = {}
+        idx_codproduto = header.get("CodProduto")
+        idx_codaux = header.get("CodAuxiliarProduto")
+
         for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
-            if all(cell.value is None or str(cell.value).strip() == "" for cell in row):
-                continue
-            cp_cell = self.get_mandatory_cell(row, header, "CodProduto")
-            if cp_cell and cp_cell.value:
-                cp_val = self.get_valor_string(cp_cell)
-                seen_codproduto[cp_val] = seen_codproduto.get(cp_val, 0) + 1
-            if "CodAuxiliarProduto" in header:
-                aux_cell = self.get_mandatory_cell(row, header, "CodAuxiliarProduto")
-                if aux_cell and aux_cell.value:
-                    aux_val = self.get_valor_string(aux_cell)
+            # Verificação rápida de linha vazia
+            if idx_codproduto is not None:
+                first_val = row[idx_codproduto].value
+                if first_val is None or (isinstance(first_val, str) and first_val.strip() == ""):
+                    continue
+
+            # Limpar zeros em todas as células da linha
+            for cell in row:
+                if cell.value == 0 or (cell.value is not None and str(cell.value).strip() == "0"):
+                    cell.value = ""
+
+            # Contar duplicados
+            if idx_codproduto is not None and row[idx_codproduto].value:
+                cp_val = str(row[idx_codproduto].value).strip()
+                if cp_val:
+                    seen_codproduto[cp_val] = seen_codproduto.get(cp_val, 0) + 1
+
+            if idx_codaux is not None and row[idx_codaux].value:
+                aux_val = str(row[idx_codaux].value).strip()
+                if aux_val:
                     seen_codaux[aux_val] = seen_codaux.get(aux_val, 0) + 1
 
-                # Verifica se há duplicatas em CodProduto ou CodAuxiliarProduto
+        # Verifica se há duplicatas
         any_duplicates = any(v > 1 for v in seen_codproduto.values()) or any(v > 1 for v in seen_codaux.values())
 
         # Adiciona coluna "Duplicados" se necessário
         if any_duplicates and "Duplicados" not in header:
             if "CodProduto" in header:
-                codproduto_col = header["CodProduto"] + 1  # Coluna 1-based
+                codproduto_col = header["CodProduto"] + 1
                 sheet.insert_cols(codproduto_col)
                 dup_header = sheet.cell(row=1, column=codproduto_col, value="Duplicados")
-                dup_header.fill = PatternFill(
-                    start_color="000000", end_color="000000", fill_type="solid"
-                )
+                dup_header.fill = PatternFill(start_color="000000", end_color="000000", fill_type="solid")
                 dup_header.font = Font(color="FFFFFF", bold=True)
-                # Atualiza o header após inserir a coluna
                 header = self.get_header_map(sheet)
 
-
-
+        # Configurar coluna RESULTADO
         result_col = len(header) + 1
         header_result = sheet.cell(row=1, column=result_col, value="RESULTADO")
-        header_result.fill = PatternFill(
-            start_color="000000", end_color="000000", fill_type="solid"
-        )
+        header_result.fill = PatternFill(start_color="000000", end_color="000000", fill_type="solid")
         header_result.font = Font(color="FFFFFF", bold=True)
+
+        # Ocultar colunas extras
+        for col in range(result_col + 1, sheet.max_column + 1):
+            sheet.column_dimensions[get_column_letter(col)].hidden = True
+
+        # Configuração de progresso
+        intervalo_progresso = max(100, total_linhas_planilha // 100) if total_linhas_planilha > 0 else 100
+        linha_atual = 0
+        ultimo_progresso_reportado = -1
+
+        # PASSADA 2: Validação completa
+        total_linhas = 0
+        linhas_validas = 0
+        linhas_erros = 0
+        linhas_advertencias = 0
+        seen_produto = {}
+
         for row in sheet.iter_rows(min_row=2):
-            if all(cell.value is None or str(cell.value).strip() == "" for cell in row):
+            # Verificação rápida de linha vazia
+            idx_cp = header.get("CodProduto")
+            if idx_cp is not None:
+                first_val = row[idx_cp].value
+                if first_val is None or (isinstance(first_val, str) and first_val.strip() == ""):
+                    continue
+            elif all(c.value is None for c in row[:3]):
                 continue
 
             # Reportar progresso granular
