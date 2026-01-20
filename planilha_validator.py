@@ -138,7 +138,7 @@ def obter_valor_celula_com_formula(cell, nome_campo):
     """
     if not cell or not cell.value:
         return None, []
-    
+
     valor_str = str(cell.value).strip()
     mensagens = []
     
@@ -183,7 +183,7 @@ def obter_valor_celula_seguro(cell):
     """
     if not cell or not cell.value:
         return "", True
-    
+
     valor_str = str(cell.value).strip()
     
     # Se não é fórmula, retorna direto
@@ -253,7 +253,7 @@ ESTADOS_BRASIL = {
 def corrigir_campo(cell, allowed_set):
     if cell.value is None:
         return False
-    valor = str(cell.value).strip()
+    valor = str(cell.value).strip() if cell.value else ""
     if valor not in allowed_set:
         cell.value = ""
         return True
@@ -277,9 +277,21 @@ def split_text(text, limit=23):
 
 
 class PlanilhaValidator:
+    @staticmethod
+    def get_valor_string(cell):
+        """
+        Converte valor de célula para string de forma otimizada.
+        Evita conversões desnecessárias e já faz strip.
+        """
+        if cell is None or cell.value is None:
+            return ""
+        if isinstance(cell.value, str):
+            return cell.value.strip()
+        return str(cell.value).strip()
+
     def __init__(self, arquivo):
         self.arquivo = arquivo
-        
+
         # Carregar workbook original (preservado)
         self.wb_original = load_workbook(arquivo)
         
@@ -734,7 +746,7 @@ class PlanilhaValidator:
             if all(cell.value is None or str(cell.value).strip() == "" for cell in row):
                 continue
             row_tuple = tuple(
-                (cell.value.strip() if cell.value is not None else "")
+                self.get_valor_string(cell)
                 for idx, cell in enumerate(row)
                 if idx not in ignore_cols
             )
@@ -995,7 +1007,7 @@ class PlanilhaValidator:
             if cod_cell is None:
                 mensagens.append("CodFilial ausente")
             else:
-                valor = cod_cell.value.strip() if cod_cell.value else ""
+                valor = self.get_valor_string(cod_cell)
                 if valor and len(valor) > 40:
                     cod_cell.fill = COR_ADVERTENCIA
                     mensagens.append(
@@ -1024,7 +1036,7 @@ class PlanilhaValidator:
             if filial_cell is None:
                 mensagens.append("Filial ausente")
             else:
-                filial_val = filial_cell.value.strip() if filial_cell.value else ""
+                filial_val = self.get_valor_string(filial_cell)
                 if filial_val and len(filial_val) > 40:
                     filial_cell.fill = COR_ADVERTENCIA
                     mensagens.append(
@@ -1161,7 +1173,7 @@ class PlanilhaValidator:
             if cell is None:
                 mensagens.append("CodRepresentante ausente")
             else:
-                valor = cell.value.strip() if cell.value else ""
+                valor = self.get_valor_string(cell)
                 if not valor or not valor.isdigit() or not (1 <= int(valor) <= 32767):
                     cell.fill = COR_ERRO
                     mensagens.append("CodRepresentante inválido")
@@ -1179,7 +1191,7 @@ class PlanilhaValidator:
             if cell_repr is None:
                 mensagens.append("Representante ausente")
             else:
-                repr_val = cell_repr.value.strip() if cell_repr.value else ""
+                repr_val = self.get_valor_string(cell_repr)
                 if not repr_val or len(repr_val) > 20:
                     cell_repr.fill = COR_ERRO
                     mensagens.append(
@@ -1300,7 +1312,7 @@ class PlanilhaValidator:
             if cell is None:
                 mensagens.append("CodCondPagamento ausente")
             else:
-                valor = cell.value.strip() if cell.value else ""
+                valor = self.get_valor_string(cell)
                 if not valor or not valor.isdigit() or not (1 <= int(valor) <= 32767):
                     cell.fill = COR_ERRO
                     mensagens.append("CodCondPagamento inválido")
@@ -1316,7 +1328,7 @@ class PlanilhaValidator:
             if cell_cond is None:
                 mensagens.append("CondPagamento ausente")
             else:
-                cond_val = cell_cond.value.strip() if cell_cond.value else ""
+                cond_val = self.get_valor_string(cell_cond)
                 if not cond_val or len(cond_val) > 20:
                     cell_cond.fill = COR_ADVERTENCIA
                     mensagens.append("Advertencia, 'CondPagamento' excede 20 caracteres")
@@ -1420,7 +1432,7 @@ class PlanilhaValidator:
             if cell is None:
                 mensagens.append("CodCondPagamento ausente")
             else:
-                valor = cell.value.strip() if cell.value else ""
+                valor = self.get_valor_string(cell)
                 if valor not in self.pagto_cod_list:
                     cell.fill = COR_ERRO
                     mensagens.append("CodCondPagamento inexistente na aba PAGTO")
@@ -1430,7 +1442,7 @@ class PlanilhaValidator:
             if cell_fil is None:
                 mensagens.append("CodFilial ausente")
             else:
-                valor_fil = cell_fil.value.strip() if cell_fil.value else ""
+                valor_fil = self.get_valor_string(cell_fil)
                 if valor_fil not in self.filial_cod_list:
                     cell_fil.fill = COR_ERRO
                     mensagens.append("CodFilial inexistente na aba FILIAL")
@@ -1441,7 +1453,8 @@ class PlanilhaValidator:
                 cell_valor = row[idx]
                 if cell_valor.value:
                     try:
-                        valor_float = float(cell_valor.value.replace(",", "."))
+                        valor_str = self.get_valor_string(cell_valor)
+                        valor_float = float(valor_str.replace(",", "."))
                         if not (0.00 <= valor_float <= 9999999999.99):
                             cell_valor.fill = COR_ERRO
                             mensagens.append("VlrMinimoPedido fora do intervalo")
@@ -1540,7 +1553,7 @@ class PlanilhaValidator:
             if cell is None:
                 mensagens.append("CodTransportadora ausente")
             else:
-                valor = cell.value.strip() if cell.value else ""
+                valor = self.get_valor_string(cell)
                 if not valor or not valor.isdigit() or not (1 <= int(valor) <= 32767):
                     cell.fill = COR_ERRO
                     mensagens.append("CodTransportadora inválido")
@@ -1556,7 +1569,7 @@ class PlanilhaValidator:
             if cell_transp is None:
                 mensagens.append("Transportadora ausente")
             else:
-                nome_transp = cell_transp.value.strip() if cell_transp.value else ""
+                nome_transp = self.get_valor_string(cell_transp)
                 if not nome_transp or len(nome_transp) > 20:
                     cell_transp.fill = COR_ERRO
                     mensagens.append("Transportadora inválida ou excede 20 caracteres")
@@ -1656,7 +1669,7 @@ class PlanilhaValidator:
             if cell_sigla is None:
                 mensagens.append("SiglaEstado ausente")
             else:
-                sigla = cell_sigla.value.strip() if cell_sigla.value else ""
+                sigla = self.get_valor_string(cell_sigla)
                 if sigla not in ESTADOS_BRASIL:
                     cell_sigla.fill = COR_ADVERTENCIA
                     mensagens.append("Advertencia, 'SiglaEstado' inválida")
@@ -1666,7 +1679,7 @@ class PlanilhaValidator:
             if cell_nome is None:
                 mensagens.append("NomeEstado ausente")
             else:
-                nome_estado = cell_nome.value.strip() if cell_nome.value else ""
+                nome_estado = self.get_valor_string(cell_nome)
                 esperado = ESTADOS_BRASIL.get(sigla, "")
                 if sigla in ESTADOS_BRASIL and nome_estado.lower() != esperado.lower():
                     cell_nome.value = esperado
@@ -1785,7 +1798,7 @@ class PlanilhaValidator:
             if cell is None:
                 mensagens.append("CodCliente ausente")
             else:
-                valor = cell.value.strip() if cell.value else ""
+                valor = self.get_valor_string(cell)
                 if not valor or not valor.isdigit() or not (1 <= int(valor) <= 9999999):
                     cell.fill = COR_ERRO
                     mensagens.append("CodCliente inválido")
@@ -1812,7 +1825,7 @@ class PlanilhaValidator:
             if cell_nf is None:
                 mensagens.append("NomeFantasia ausente")
             else:
-                nf = cell_nf.value.strip() if cell_nf.value else ""
+                nf = self.get_valor_string(cell_nf)
                 if not nf or len(nf) > 20:
                     cell_nf.fill = COR_ADVERTENCIA
                     mensagens.append("Advertencia, NomeFantasia excede 20 carcteres")
@@ -1821,7 +1834,7 @@ class PlanilhaValidator:
             idx = header.get("CodRepresentante")
             if idx is not None:
                 cell_cr = row[idx]
-                cr_val = cell_cr.value.strip() if cell_cr.value else ""
+                cr_val = self.get_valor_string(cell_cr)
                 if cr_val == "0":
                     cell_cr.value = ""
                     cell_cr.fill = COR_VALIDO
@@ -1834,7 +1847,7 @@ class PlanilhaValidator:
             idx = header.get("RazaoSocial")
             if idx is not None:
                 cell_rs = row[idx]
-                rs_val = cell_rs.value.strip() if cell_rs.value else ""
+                rs_val = self.get_valor_string(cell_rs)
                 if rs_val and len(rs_val) > 40:
                     cell_rs.fill = COR_ERRO
                     mensagens.append("RazaoSocial excede 40 caracteres")
@@ -1936,7 +1949,7 @@ class PlanilhaValidator:
             if cell is None:
                 mensagens.append("CodFamilia ausente")
             else:
-                valor = str(cell.value).strip() if cell.value else ""
+                valor = self.get_valor_string(cell)
                 if not valor or not valor.isdigit() or not (1 <= int(valor) <= 999999):
                     cell.fill = COR_ERRO
                     mensagens.append("CodFamilia inválido")
@@ -1948,7 +1961,7 @@ class PlanilhaValidator:
             if cell_fam is None:
                 mensagens.append("Familia ausente")
             else:
-                fam_val = cell_fam.value.strip() if cell_fam.value else ""
+                fam_val = self.get_valor_string(cell_fam)
                 if not fam_val or len(fam_val) > 45:
                     cell_fam.fill = COR_ERRO
                     mensagens.append("Familia excede 45 caracteres")
@@ -1974,7 +1987,8 @@ class PlanilhaValidator:
                 cell_desc = row[idx]
                 if cell_desc.value:
                     try:
-                        desc_val = float(cell_desc.value.replace(",", "."))
+                        desc_str = self.get_valor_string(cell_desc)
+                        desc_val = float(desc_str.replace(",", "."))
                         if not (0.00 <= desc_val <= 99.99):
                             cell_desc.fill = COR_ERRO
                             mensagens.append("DescontoFamilia fora do intervalo")
@@ -2056,7 +2070,7 @@ class PlanilhaValidator:
             if cell is None:
                 mensagens.append("CodEstilo ausente")
             else:
-                valor = str(cell.value).strip() if cell.value else ""
+                valor = self.get_valor_string(cell)
                 if not valor or not valor.isdigit() or not (1 <= int(valor) <= 999999):
                     cell.fill = COR_ERRO
                     mensagens.append("CodEstilo inválido")
@@ -2068,7 +2082,7 @@ class PlanilhaValidator:
             if cell_est is None:
                 mensagens.append("Estilo ausente")
             else:
-                est_val = cell_est.value.strip() if cell_est.value else ""
+                est_val = self.get_valor_string(cell_est)
                 if not est_val or len(est_val) > 45:
                     cell_est.fill = COR_ERRO
                     mensagens.append("Estilo excede 45 caracteres")
@@ -2149,12 +2163,12 @@ class PlanilhaValidator:
                 continue
             cp_cell = self.get_mandatory_cell(row, header, "CodProduto")
             if cp_cell and cp_cell.value:
-                cp_val = str(cp_cell.value).strip()
+                cp_val = self.get_valor_string(cp_cell)
                 seen_codproduto[cp_val] = seen_codproduto.get(cp_val, 0) + 1
             if "CodAuxiliarProduto" in header:
                 aux_cell = self.get_mandatory_cell(row, header, "CodAuxiliarProduto")
                 if aux_cell and aux_cell.value:
-                    aux_val = str(aux_cell.value).strip()
+                    aux_val = self.get_valor_string(aux_cell)
                     seen_codaux[aux_val] = seen_codaux.get(aux_val, 0) + 1
 
                 # Verifica se há duplicatas em CodProduto ou CodAuxiliarProduto
@@ -2194,7 +2208,7 @@ class PlanilhaValidator:
             if cell_cp is None:
                 mensagens.append("CodProduto ausente")
             else:
-                cp_val = cell_cp.value.strip() if cell_cp.value else ""
+                cp_val = self.get_valor_string(cell_cp)
                 if self.emp_cod_tipo == "N":
                     if not cp_val.isdigit():
                         cell_cp.fill = COR_ERRO
@@ -2216,7 +2230,7 @@ class PlanilhaValidator:
             if "CodAuxiliarProduto" in header:
                 aux_cell = self.get_mandatory_cell(row, header, "CodAuxiliarProduto")
                 if aux_cell:
-                    aux_val = aux_cell.value.strip() if aux_cell.value else ""
+                    aux_val = self.get_valor_string(aux_cell)
                     if aux_val:
                         # Verificar se código auxiliar está configurado na empresa
                         if self.emp_cod_aux == "X":
@@ -2246,7 +2260,7 @@ class PlanilhaValidator:
             if cell_prod is None:
                 mensagens.append("Produto ausente")
             else:
-                prod_val = cell_prod.value.strip() if cell_prod.value else ""
+                prod_val = self.get_valor_string(cell_prod)
                 if not prod_val:
                     cell_prod.fill = COR_ERRO
                     mensagens.append("Produto vazio")
@@ -2263,7 +2277,7 @@ class PlanilhaValidator:
             if cell_cf is None:
                 mensagens.append("CodFilial ausente")
             else:
-                cf_val = cell_cf.value.strip() if cell_cf.value else ""
+                cf_val = self.get_valor_string(cell_cf)
                 if cf_val and len(cf_val) > 40:
                     cell_cf.fill = COR_ADVERTENCIA
                     mensagens.append(
@@ -2271,7 +2285,7 @@ class PlanilhaValidator:
                     )
                 if not cf_val and len(self.filial_cod_list) == 1:
                     cell_cf.value = self.filial_cod_list[0]
-                    cf_val = cell_cf.value.strip()
+                    cf_val = self.get_valor_string(cell_cf)
                     cell_cf.fill = COR_ADVERTENCIA
                     mensagens.append("Advertencia, CodFilial corrigido automaticamente")
                 elif not cf_val:
@@ -2280,7 +2294,7 @@ class PlanilhaValidator:
                 elif cf_val not in self.filial_cod_list:
                     if len(self.filial_cod_list) == 1:
                         cell_cf.value = self.filial_cod_list[0]
-                        cf_val = cell_cf.value.strip()
+                        cf_val = self.get_valor_string(cell_cf)
                         cell_cf.fill = COR_ADVERTENCIA
                         mensagens.append(
                             "Advertencia, CodFilial corrigido automaticamente"
@@ -2293,7 +2307,7 @@ class PlanilhaValidator:
             idx = header.get("CodFamilia")
             if idx is not None:
                 cell_cfam = self.get_mandatory_cell(row, header, "CodFamilia")
-                cfam_val = str(cell_cfam.value).strip() if cell_cfam.value else ""
+                cfam_val = self.get_valor_string(cell_cfam)
                 
                 if cfam_val:
                     if not cfam_val.isdigit():
@@ -2309,7 +2323,7 @@ class PlanilhaValidator:
             idx = header.get("CodEstilo")
             if idx is not None:
                 cell_ce = self.get_mandatory_cell(row, header, "CodEstilo")
-                ce_val = str(cell_ce.value).strip() if cell_ce.value else ""
+                ce_val = self.get_valor_string(cell_ce)
                 
                 if ce_val:
                     if not ce_val.isdigit():
@@ -2450,7 +2464,7 @@ class PlanilhaValidator:
                         cell_pt1.value = f"{pt1_val:.2f}".replace(".", ",")
                     else:
                         # Tratar como string e converter formato
-                        valor_str = str(cell_pt1.value).strip()
+                        valor_str = self.get_valor_string(cell_pt1)
                         
                         # Converter pontos para vírgulas inteligentemente
                         converted_value, foi_alterado = convert_price_to_comma_format(valor_str)
@@ -2486,7 +2500,7 @@ class PlanilhaValidator:
                             cell_pt2.value = f"{pt2_val:.2f}".replace(".", ",")
                         else:
                             # Tratar como string e converter formato
-                            valor_str = str(cell_pt2.value).strip()
+                            valor_str = self.get_valor_string(cell_pt2)
                             
                             # Converter pontos para vírgulas inteligentemente
                             converted_value, foi_alterado = convert_price_to_comma_format(valor_str)
@@ -2526,7 +2540,7 @@ class PlanilhaValidator:
                             cell_pt3.value = f"{pt3_val:.2f}".replace(".", ",")
                         else:
                             # Tratar como string e converter formato
-                            valor_str = str(cell_pt3.value).strip()
+                            valor_str = self.get_valor_string(cell_pt3)
                             
                             # Converter pontos para vírgulas inteligentemente
                             converted_value, foi_alterado = convert_price_to_comma_format(valor_str)
@@ -2554,7 +2568,8 @@ class PlanilhaValidator:
                 cell_lim = row[idx]
                 if cell_lim.value:
                     try:
-                        lim_val = float(cell_lim.value.replace(",", "."))
+                        lim_str = self.get_valor_string(cell_lim)
+                        lim_val = float(lim_str.replace(",", "."))
                         if not (0.00 <= lim_val <= 99.99):
                             cell_lim.fill = COR_ERRO
                             mensagens.append("LimiteDescIndividual fora do intervalo")
@@ -2585,7 +2600,8 @@ class PlanilhaValidator:
                     cell_dg = row[idx]
                     if cell_dg.value:
                         try:
-                            dg_val = float(cell_dg.value.replace(",", "."))
+                            dg_str = self.get_valor_string(cell_dg)
+                            dg_val = float(dg_str.replace(",", "."))
                             if not (0.00 <= dg_val <= 99.99):
                                 cell_dg.fill = COR_ERRO
                                 mensagens.append("DescontoGrade fora do intervalo")
@@ -2608,7 +2624,9 @@ class PlanilhaValidator:
                 cell_ipi = row[idx]
                 if cell_ipi.value:
                     try:
-                        ipi_val = float(cell_ipi.value.replace(",", "."))
+                        # Converter para string primeiro, depois tratar
+                        ipi_str = self.get_valor_string(cell_ipi)
+                        ipi_val = float(ipi_str.replace(",", "."))
                         if not (0.00 <= ipi_val <= 99.99):
                             cell_ipi.fill = COR_ERRO
                             mensagens.append("AliquotaIPI fora do intervalo")
@@ -2665,7 +2683,7 @@ class PlanilhaValidator:
                         dt = None
                         for fmt in ("%d/%m/%Y", "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
                             try:
-                                dt = datetime.strptime(cell_data.value.strip(), fmt)
+                                dt = datetime.strptime(self.get_valor_string(cell_data), fmt)
                                 break
                             except:
                                 continue
@@ -2690,7 +2708,7 @@ class PlanilhaValidator:
             if idx is not None:
                 cell_pf = row[idx]
                 if cell_pf.value:
-                    path_foto = cell_pf.value.strip()
+                    path_foto = self.get_valor_string(cell_pf)
                     
                     # Validação de tamanho (existente)
                     if len(path_foto) > 60:
@@ -2991,8 +3009,8 @@ class PlanilhaValidator:
         Retorna: (dados_excel, nome_arquivo, status, resultados)
         """
         self.limpar_planilha()
-        self.converter_tudo_para_texto()
-        self.limpar_espacos()
+        # ✅ OTIMIZAÇÃO: Removidas converter_tudo_para_texto() e limpar_espacos()
+        # A conversão e limpeza agora acontecem sob demanda via get_valor_string()
 
         self.validar_EMPRESA()
         self.pre_validar_filial()
