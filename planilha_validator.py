@@ -289,14 +289,16 @@ class PlanilhaValidator:
             return cell.value.strip()
         return str(cell.value).strip()
 
-    def __init__(self, arquivo, progress_callback=None):
+    def __init__(self, arquivo, progress_callback=None, dev_mode=False):
         """
         Args:
             arquivo: Caminho do arquivo Excel
             progress_callback: Função opcional callback(percentual, mensagem) para reportar progresso
+            dev_mode: Se True, mantem colunas de debug como 'Status da Linha'
         """
         self.arquivo = arquivo
         self.progress_callback = progress_callback
+        self.dev_mode = dev_mode
 
         # Carregar workbook original (preservado)
         self.wb_original = load_workbook(arquivo)
@@ -570,6 +572,17 @@ class PlanilhaValidator:
                     if key.strip().lower() == "duplicados"
                 ]
                 for idx in sorted(indices_duplicados, reverse=True):
+                    sheet.delete_cols(idx + 1)
+
+            # Remover coluna "Status da Linha" (exceto em modo dev)
+            if not self.dev_mode:
+                header = self.get_header_map(sheet)
+                indices_status = [
+                    idx
+                    for key, idx in header.items()
+                    if key.strip().lower() == "status da linha"
+                ]
+                for idx in sorted(indices_status, reverse=True):
                     sheet.delete_cols(idx + 1)
 
     def converter_tudo_para_texto(self):

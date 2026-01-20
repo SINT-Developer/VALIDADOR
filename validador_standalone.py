@@ -119,7 +119,7 @@ class ValidadorApp:
             t0 = time.perf_counter()
 
             # Instanciar o validador com callback de progresso
-            validator = PlanilhaValidator(file_path, progress_callback=self.update_progress)
+            validator = PlanilhaValidator(file_path, progress_callback=self.update_progress, dev_mode=self.dev_mode)
 
             tempo_load = time.perf_counter() - t0
 
