@@ -2160,11 +2160,11 @@ class PlanilhaValidator:
         self.excluir_linhas_duplicadas_produtos(sheet, header)
 
         # PASSADA 1: Contagem de duplicados + limpeza de zeros (OTIMIZADO)
-        total_linhas_planilha = sheet.max_row - 1
         seen_codproduto = {}
         seen_codaux = {}
         idx_codproduto = header.get("CodProduto")
         idx_codaux = header.get("CodAuxiliarProduto")
+        total_linhas_planilha = 0  # Contar linhas válidas reais
 
         for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
             # Verificação rápida de linha vazia
@@ -2172,6 +2172,8 @@ class PlanilhaValidator:
                 first_val = row[idx_codproduto].value
                 if first_val is None or (isinstance(first_val, str) and first_val.strip() == ""):
                     continue
+
+            total_linhas_planilha += 1  # Contar apenas linhas com dados
 
             # Limpar zeros em todas as células da linha
             for cell in row:
@@ -2224,12 +2226,38 @@ class PlanilhaValidator:
         linhas_advertencias = 0
         seen_produto = {}
 
+        # OTIMIZAÇÃO: Pré-calcular índices fora do loop (evita 79k lookups)
+        idx_codproduto = header.get("CodProduto")
+        idx_codaux = header.get("CodAuxiliarProduto")
+        idx_produto = header.get("Produto")
+        idx_codfilial = header.get("CodFilial")
+        idx_codfamilia = header.get("CodFamilia")
+        idx_codestilo = header.get("CodEstilo")
+        idx_duplicados = header.get("Duplicados")
+
+        # OTIMIZAÇÃO: Pré-calcular valores da empresa
+        emp_cod_tipo = self.emp_cod_tipo
+        emp_cod_tamanho = self.emp_cod_tamanho
+        emp_cod_aux = self.emp_cod_aux
+        emp_cod_aux_tamanho = self.emp_cod_aux_tamanho
+        filial_cod_list = self.filial_cod_list
+        filial_unica = len(filial_cod_list) == 1
+        filial_valor_unico = filial_cod_list[0] if filial_unica else None
+        familia_cod_set = set(self.familia_cod_list)  # Set para lookup O(1)
+        estilo_cod_set = set(self.estilo_cod_list)    # Set para lookup O(1)
+
+        # OTIMIZAÇÃO: Função inline para obter valor string
+        def get_val(cell):
+            if cell is None or cell.value is None:
+                return ""
+            v = cell.value
+            return v.strip() if isinstance(v, str) else str(v).strip()
+
         for row in sheet.iter_rows(min_row=2):
             # Verificação rápida de linha vazia
-            idx_cp = header.get("CodProduto")
-            if idx_cp is not None:
-                first_val = row[idx_cp].value
-                if first_val is None or (isinstance(first_val, str) and first_val.strip() == ""):
+            if idx_codproduto is not None:
+                first_val = row[idx_codproduto].value
+                if first_val is None or (isinstance(first_val, str) and not first_val.strip()):
                     continue
             elif all(c.value is None for c in row[:3]):
                 continue
@@ -2237,144 +2265,144 @@ class PlanilhaValidator:
             # Reportar progresso granular
             linha_atual += 1
             if progress_base is not None and progress_range is not None and total_linhas_planilha > 0:
-                progresso_linha = int((linha_atual / total_linhas_planilha) * 100)
-                if progresso_linha != ultimo_progresso_reportado and linha_atual % intervalo_progresso == 0:
-                    ultimo_progresso_reportado = progresso_linha
-                    percentual_atual = progress_base + int((linha_atual / total_linhas_planilha) * progress_range)
-                    self._reportar_progresso(percentual_atual, f"Validando PRODUTOS... {progresso_linha}% ({linha_atual}/{total_linhas_planilha})")
+                if linha_atual % intervalo_progresso == 0:
+                    progresso_linha = int((linha_atual / total_linhas_planilha) * 100)
+                    if progresso_linha != ultimo_progresso_reportado:
+                        ultimo_progresso_reportado = progresso_linha
+                        percentual_atual = progress_base + int((linha_atual / total_linhas_planilha) * progress_range)
+                        self._reportar_progresso(percentual_atual, f"Validando PRODUTOS... {progresso_linha}% ({linha_atual}/{total_linhas_planilha})")
 
             total_linhas += 1
             mensagens = []
             dup_valores = []
-            # Se houver correções no cabeçalho, adiciona essa advertência para cada linha
+
             if header_warning:
                 mensagens.append(header_warning)
-            cell_cp = self.get_mandatory_cell(row, header, "CodProduto")
-            if cell_cp is None:
+
+            # Validar CodProduto (usando índice direto)
+            if idx_codproduto is None:
                 mensagens.append("CodProduto ausente")
             else:
-                cp_val = self.get_valor_string(cell_cp)
-                if self.emp_cod_tipo == "N":
+                cell_cp = row[idx_codproduto]
+                cp_val = get_val(cell_cp)
+                if emp_cod_tipo == "N":
                     if not cp_val.isdigit():
                         cell_cp.fill = COR_ERRO
                         mensagens.append("CodProduto inválido (deve ser numérico)")
-                    elif len(cp_val) > self.emp_cod_tamanho:
+                    elif len(cp_val) > emp_cod_tamanho:
                         cell_cp.fill = COR_ERRO
                         mensagens.append("CodProduto inválido (excede tamanho permitido)")
                     else:
                         cell_cp.fill = COR_VALIDO
-                elif self.emp_cod_tipo == "A":
-                    if len(cp_val) > self.emp_cod_tamanho:
+                elif emp_cod_tipo == "A":
+                    if len(cp_val) > emp_cod_tamanho:
                         cell_cp.fill = COR_ERRO
                         mensagens.append("CodProduto excede tamanho permitido")
                     else:
                         cell_cp.fill = COR_VALIDO
-                if seen_codproduto.get(cp_val, 0) > 1 and cp_val:
+                if cp_val and seen_codproduto.get(cp_val, 0) > 1:
                     mensagens.append("CodProduto duplicado")
                     dup_valores.append(cp_val)
-            if "CodAuxiliarProduto" in header:
-                aux_cell = self.get_mandatory_cell(row, header, "CodAuxiliarProduto")
-                if aux_cell:
-                    aux_val = self.get_valor_string(aux_cell)
-                    if aux_val:
-                        # Verificar se código auxiliar está configurado na empresa
-                        if self.emp_cod_aux == "X":
+
+            # Validar CodAuxiliarProduto (usando índice direto)
+            if idx_codaux is not None:
+                aux_cell = row[idx_codaux]
+                aux_val = get_val(aux_cell)
+                if aux_val:
+                    if emp_cod_aux == "X":
+                        aux_cell.fill = COR_ERRO
+                        mensagens.append("CodAuxiliarProduto não permitido (configurado como não usado)")
+                    elif emp_cod_aux == "N":
+                        if not aux_val.isdigit():
                             aux_cell.fill = COR_ERRO
-                            mensagens.append("CodAuxiliarProduto não permitido (configurado como não usado)")
-                        elif self.emp_cod_aux == "N":
-                            if not aux_val.isdigit():
-                                aux_cell.fill = COR_ERRO
-                                mensagens.append("CodAuxiliarProduto inválido (deve ser numérico)")
-                            elif self.emp_cod_aux_tamanho and len(aux_val) > self.emp_cod_aux_tamanho:
-                                aux_cell.fill = COR_ERRO
-                                mensagens.append("CodAuxiliarProduto inválido (excede tamanho permitido)")
-                            else:
-                                aux_cell.fill = COR_VALIDO
-                        elif self.emp_cod_aux == "A":
-                            if self.emp_cod_aux_tamanho and len(aux_val) > self.emp_cod_aux_tamanho:
-                                aux_cell.fill = COR_ERRO
-                                mensagens.append("CodAuxiliarProduto inválido (excede tamanho permitido)")
-                            else:
-                                aux_cell.fill = COR_VALIDO
-                        if seen_codaux.get(aux_val, 0) > 1:
-                            mensagens.append("CodAuxiliarProduto duplicado")
-                            dup_valores.append(aux_val)
-                    else:
-                        aux_cell.fill = COR_VALIDO
-            cell_prod = self.get_mandatory_cell(row, header, "Produto")
-            if cell_prod is None:
+                            mensagens.append("CodAuxiliarProduto inválido (deve ser numérico)")
+                        elif emp_cod_aux_tamanho and len(aux_val) > emp_cod_aux_tamanho:
+                            aux_cell.fill = COR_ERRO
+                            mensagens.append("CodAuxiliarProduto inválido (excede tamanho permitido)")
+                        else:
+                            aux_cell.fill = COR_VALIDO
+                    elif emp_cod_aux == "A":
+                        if emp_cod_aux_tamanho and len(aux_val) > emp_cod_aux_tamanho:
+                            aux_cell.fill = COR_ERRO
+                            mensagens.append("CodAuxiliarProduto inválido (excede tamanho permitido)")
+                        else:
+                            aux_cell.fill = COR_VALIDO
+                    if seen_codaux.get(aux_val, 0) > 1:
+                        mensagens.append("CodAuxiliarProduto duplicado")
+                        dup_valores.append(aux_val)
+                else:
+                    aux_cell.fill = COR_VALIDO
+
+            # Validar Produto (usando índice direto)
+            if idx_produto is None:
                 mensagens.append("Produto ausente")
             else:
-                prod_val = self.get_valor_string(cell_prod)
+                cell_prod = row[idx_produto]
+                prod_val = get_val(cell_prod)
                 if not prod_val:
                     cell_prod.fill = COR_ERRO
                     mensagens.append("Produto vazio")
                 elif len(prod_val) > 45:
                     cell_prod.fill = COR_ADVERTENCIA
-                    mensagens.append(
-                        "Advertencia, 'Produto' excedeu o limite de caracteres"
-                    )
+                    mensagens.append("Advertencia, 'Produto' excedeu o limite de caracteres")
                 else:
                     cell_prod.fill = COR_VALIDO
                 seen_produto[prod_val] = seen_produto.get(prod_val, 0) + 1
-            # Lógica para CodFilial em PRODUTOS (já estava funcionando)
-            cell_cf = self.get_mandatory_cell(row, header, "CodFilial")
-            if cell_cf is None:
+
+            # Validar CodFilial (usando índice direto)
+            if idx_codfilial is None:
                 mensagens.append("CodFilial ausente")
             else:
-                cf_val = self.get_valor_string(cell_cf)
+                cell_cf = row[idx_codfilial]
+                cf_val = get_val(cell_cf)
                 if cf_val and len(cf_val) > 40:
                     cell_cf.fill = COR_ADVERTENCIA
-                    mensagens.append(
-                        "Advertencia, 'CodFilial' excedeu o limite de caracteres"
-                    )
-                if not cf_val and len(self.filial_cod_list) == 1:
-                    cell_cf.value = self.filial_cod_list[0]
-                    cf_val = self.get_valor_string(cell_cf)
+                    mensagens.append("Advertencia, 'CodFilial' excedeu o limite de caracteres")
+                if not cf_val and filial_unica:
+                    cell_cf.value = filial_valor_unico
+                    cf_val = filial_valor_unico
                     cell_cf.fill = COR_ADVERTENCIA
                     mensagens.append("Advertencia, CodFilial corrigido automaticamente")
                 elif not cf_val:
                     cell_cf.fill = COR_ERRO
                     mensagens.append("CodFilial ausente e múltiplas opções disponíveis")
-                elif cf_val not in self.filial_cod_list:
-                    if len(self.filial_cod_list) == 1:
-                        cell_cf.value = self.filial_cod_list[0]
-                        cf_val = self.get_valor_string(cell_cf)
+                elif cf_val not in filial_cod_list:
+                    if filial_unica:
+                        cell_cf.value = filial_valor_unico
+                        cf_val = filial_valor_unico
                         cell_cf.fill = COR_ADVERTENCIA
-                        mensagens.append(
-                            "Advertencia, CodFilial corrigido automaticamente"
-                        )
+                        mensagens.append("Advertencia, CodFilial corrigido automaticamente")
                     else:
                         cell_cf.fill = COR_ERRO
                         mensagens.append("CodFilial inexistente")
                 else:
                     cell_cf.fill = COR_VALIDO
-            idx = header.get("CodFamilia")
-            if idx is not None:
-                cell_cfam = self.get_mandatory_cell(row, header, "CodFamilia")
-                cfam_val = self.get_valor_string(cell_cfam)
-                
+
+            # Validar CodFamilia (usando índice direto e Set)
+            if idx_codfamilia is not None:
+                cell_cfam = row[idx_codfamilia]
+                cfam_val = get_val(cell_cfam)
                 if cfam_val:
                     if not cfam_val.isdigit():
                         cell_cfam.fill = COR_ERRO
                         mensagens.append("CodFamilia deve ser inteiro")
-                    elif cfam_val not in self.familia_cod_list:
+                    elif cfam_val not in familia_cod_set:
                         cell_cfam.fill = COR_ERRO
                         mensagens.append("CodFamilia inexistente")
                     else:
                         cell_cfam.fill = COR_VALIDO
                 else:
                     cell_cfam.fill = COR_VALIDO
-            idx = header.get("CodEstilo")
-            if idx is not None:
-                cell_ce = self.get_mandatory_cell(row, header, "CodEstilo")
-                ce_val = self.get_valor_string(cell_ce)
-                
+
+            # Validar CodEstilo (usando índice direto e Set)
+            if idx_codestilo is not None:
+                cell_ce = row[idx_codestilo]
+                ce_val = get_val(cell_ce)
                 if ce_val:
                     if not ce_val.isdigit():
                         cell_ce.fill = COR_ERRO
                         mensagens.append("CodEstilo deve ser inteiro")
-                    elif ce_val not in self.estilo_cod_list:
+                    elif ce_val not in estilo_cod_set:
                         cell_ce.fill = COR_ERRO
                         mensagens.append("CodEstilo inexistente")
                     else:
