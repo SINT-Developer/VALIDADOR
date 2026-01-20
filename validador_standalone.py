@@ -14,9 +14,10 @@ from planilha_validator import PlanilhaValidator
 
 
 class ValidadorApp:
-    def __init__(self, root):
+    def __init__(self, root, dev_mode=False):
         self.root = root
-        self.root.title("Validador de Planilhas - SINT")
+        self.dev_mode = dev_mode
+        self.root.title("Validador de Planilhas - SINT" + (" [DEV]" if dev_mode else ""))
         self.root.geometry("600x350")
         self.root.resizable(False, False)
         self.setup_ui()
@@ -109,24 +110,35 @@ class ValidadorApp:
 
     def process_validation(self, file_path):
         try:
+            import time
+
             # Atualizar progresso
-            self.update_progress(20, "Carregando planilha...")
+            self.update_progress(2, "Carregando planilha...")
 
-            # Instanciar o validador
-            validator = PlanilhaValidator(file_path)
+            # Medir tempo de carregamento (modo dev)
+            t0 = time.perf_counter()
 
-            # Processar a validação
-            self.update_progress(30, "Validando dados...")
+            # Instanciar o validador com callback de progresso
+            validator = PlanilhaValidator(file_path, progress_callback=self.update_progress)
+
+            tempo_load = time.perf_counter() - t0
+
+            # Habilitar profiling se em modo dev
+            if self.dev_mode:
+                validator._dev_mode = True
+                validator._timings = {}
+
+            # Processar a validação (progresso é reportado automaticamente pelo validador)
+            t0 = time.perf_counter()
             excel_data, nome_arquivo, status, resultados = validator.processar(
                 "Validação Local"
             )
+            tempo_total = time.perf_counter() - t0
 
             # Verificar se deve gerar planilha de etiquetas
-            self.update_progress(70, "Gerando relatórios...")
             etiquetas_result = validator.gerar_planilha_etiquetas()
 
             # Salvar arquivos na pasta do executável
-            self.update_progress(80, "Salvando arquivos...")
             desktop_path = os.path.dirname(os.path.abspath(sys.argv[0]))
 
             # Salvar o arquivo principal
@@ -141,9 +153,6 @@ class ValidadorApp:
                 etiquetas_path = os.path.join(desktop_path, etiquetas_nome)
                 with open(etiquetas_path, "wb") as f:
                     f.write(etiquetas_data.getbuffer())
-
-            # Finalizar
-            self.update_progress(100, "Validação concluída!")
 
             # Mostrar resultado
             status_text = {
@@ -177,6 +186,10 @@ class ValidadorApp:
             # Atualizar status
             self.status_var.set(f"Validação concluída com status: {status_text}")
 
+            # Gerar relatório de profiling se em modo dev
+            if self.dev_mode:
+                self._gerar_relatorio_dev(validator, tempo_load, tempo_total, resultados, status)
+
         except Exception as e:
             messagebox.showerror(
                 "Erro", f"Ocorreu um erro durante a validação:\n{str(e)}"
@@ -202,8 +215,36 @@ class ValidadorApp:
         self.root.after(0, lambda: self.status_var.set(message))
         self.root.update_idletasks()
 
+    def _gerar_relatorio_dev(self, validator, tempo_load, tempo_total, resultados, status):
+        """Gera relatório de profiling no console."""
+        print("\n" + "=" * 60)
+        print("RELATORIO DE PERFORMANCE")
+        print("=" * 60)
+        print(f"{'Etapa':<35} {'Tempo':>10} {'%':>8}")
+        print("-" * 60)
+
+        timings = getattr(validator, '_timings', {})
+        for etapa, tempo in sorted(timings.items(), key=lambda x: -x[1]):
+            pct = (tempo / tempo_total * 100) if tempo_total > 0 else 0
+            print(f"{etapa:<35} {tempo:>9.2f}s {pct:>7.1f}%")
+
+        print("-" * 60)
+        print(f"{'Carregamento workbook':<35} {tempo_load:>9.2f}s")
+        print(f"{'TOTAL PROCESSAMENTO':<35} {tempo_total:>9.2f}s")
+        print("=" * 60)
+
+        print("\nLINHAS POR ABA:")
+        print("-" * 40)
+        for r in resultados:
+            print(f"  {r['Planilha']:<20} {r.get('total', 0):>6} linhas")
+
+        print("\n" + "=" * 60)
+        print(f"Status final: {status.upper()}")
+        print("=" * 60)
+
 
 if __name__ == "__main__":
+    dev_mode = "--dev" in sys.argv
     root = tk.Tk()
-    app = ValidadorApp(root)
+    app = ValidadorApp(root, dev_mode=dev_mode)
     root.mainloop()

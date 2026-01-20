@@ -289,8 +289,14 @@ class PlanilhaValidator:
             return cell.value.strip()
         return str(cell.value).strip()
 
-    def __init__(self, arquivo):
+    def __init__(self, arquivo, progress_callback=None):
+        """
+        Args:
+            arquivo: Caminho do arquivo Excel
+            progress_callback: Função opcional callback(percentual, mensagem) para reportar progresso
+        """
         self.arquivo = arquivo
+        self.progress_callback = progress_callback
 
         # Carregar workbook original (preservado)
         self.wb_original = load_workbook(arquivo)
@@ -349,6 +355,11 @@ class PlanilhaValidator:
         except Exception as e:
             self.cache_arquivos_imagem = set()
             print(f"⚠️ Erro ao carregar cache de imagens: {e}")
+
+    def _reportar_progresso(self, percentual, mensagem):
+        """Reporta progresso via callback se disponível."""
+        if self.progress_callback:
+            self.progress_callback(percentual, mensagem)
 
     def limpar_espacos(self):
         """
@@ -2110,7 +2121,14 @@ class PlanilhaValidator:
         )
         self.aplicar_borda(sheet)
 
-    def validar_PRODUTOS(self):
+    def validar_PRODUTOS(self, progress_base=None, progress_range=None):
+        """
+        Valida a aba PRODUTOS.
+
+        Args:
+            progress_base: Percentual base para reportar progresso (ex: 77)
+            progress_range: Range de percentual disponível para esta validação (ex: 15 significa 77-92%)
+        """
         if "PRODUTOS" not in self.wb.sheetnames:
             return "Erro", "A aba PRODUTOS não foi encontrada!"
 
@@ -2151,6 +2169,14 @@ class PlanilhaValidator:
 
         # Excluir linhas duplicadas (linhas idênticas, exceto "duplicados" e "RESULTADO")
         self.excluir_linhas_duplicadas_produtos(sheet, header)
+
+        # Configuração de progresso granular
+        total_linhas_planilha = sheet.max_row - 1  # -1 para excluir cabeçalho
+        # Intervalo de atualização: a cada 1% ou no mínimo a cada 50 linhas
+        intervalo_progresso = max(50, total_linhas_planilha // 100) if total_linhas_planilha > 0 else 50
+        linha_atual = 0
+        ultimo_progresso_reportado = -1
+
         total_linhas = 0
         linhas_validas = 0
         linhas_erros = 0
@@ -2198,6 +2224,16 @@ class PlanilhaValidator:
         for row in sheet.iter_rows(min_row=2):
             if all(cell.value is None or str(cell.value).strip() == "" for cell in row):
                 continue
+
+            # Reportar progresso granular
+            linha_atual += 1
+            if progress_base is not None and progress_range is not None and total_linhas_planilha > 0:
+                progresso_linha = int((linha_atual / total_linhas_planilha) * 100)
+                if progresso_linha != ultimo_progresso_reportado and linha_atual % intervalo_progresso == 0:
+                    ultimo_progresso_reportado = progresso_linha
+                    percentual_atual = progress_base + int((linha_atual / total_linhas_planilha) * progress_range)
+                    self._reportar_progresso(percentual_atual, f"Validando PRODUTOS... {progresso_linha}% ({linha_atual}/{total_linhas_planilha})")
+
             total_linhas += 1
             mensagens = []
             dup_valores = []
@@ -3003,28 +3039,54 @@ class PlanilhaValidator:
             # Retorna o caminho do arquivo salvo
             #return caminho_arquivo
         
+    def _timing(self, nome, funcao, *args, **kwargs):
+        """Executa função e registra tempo se em modo dev."""
+        import time
+        if getattr(self, '_dev_mode', False):
+            t0 = time.perf_counter()
+            result = funcao(*args, **kwargs)
+            self._timings[nome] = time.perf_counter() - t0
+            return result
+        return funcao(*args, **kwargs)
+
     def processar(self, empresa):
         """
         Processa a validação e retorna os dados em memória.
         Retorna: (dados_excel, nome_arquivo, status, resultados)
         """
-        self.limpar_planilha()
-        # ✅ OTIMIZAÇÃO: Removidas converter_tudo_para_texto() e limpar_espacos()
-        # A conversão e limpeza agora acontecem sob demanda via get_valor_string()
+        # Lista de etapas de validação com seus nomes amigáveis
+        # PRODUTOS é tratado separadamente pois tem progresso granular
+        etapas_pre_produtos = [
+            (self.limpar_planilha, "limpar_planilha", "Limpando planilha..."),
+            (self.validar_EMPRESA, "validar_EMPRESA", "Validando EMPRESA..."),
+            (self.pre_validar_filial, "pre_validar_filial", "Pré-validando FILIAL..."),
+            (self.validar_FILIAL, "validar_FILIAL", "Validando FILIAL..."),
+            (self.validar_REPR, "validar_REPR", "Validando REPRESENTANTES..."),
+            (self.validar_PAGTO, "validar_PAGTO", "Validando PAGAMENTO..."),
+            (self.validar_PAGTOFILIAL, "validar_PAGTOFILIAL", "Validando PAGTO x FILIAL..."),
+            (self.validar_TRANSP, "validar_TRANSP", "Validando TRANSPORTADORAS..."),
+            (self.validar_ESTADOS, "validar_ESTADOS", "Validando ESTADOS..."),
+            (self.validar_CLIENTES, "validar_CLIENTES", "Validando CLIENTES..."),
+            (self.validar_FAMILIAS, "validar_FAMILIAS", "Validando FAMÍLIAS..."),
+            (self.validar_ESTILOS, "validar_ESTILOS", "Validando ESTILOS..."),
+        ]
 
-        self.validar_EMPRESA()
-        self.pre_validar_filial()
-        self.validar_FILIAL()
-        self.validar_REPR()
-        self.validar_PAGTO()
-        self.validar_PAGTOFILIAL()
-        self.validar_TRANSP()
-        self.validar_ESTADOS()
-        self.validar_CLIENTES()
-        self.validar_FAMILIAS()
-        self.validar_ESTILOS()
-        self.validar_PRODUTOS()
-        self.gerar_relatorio_final()
+        # Etapas pré-PRODUTOS: 5% a 50%
+        total_pre = len(etapas_pre_produtos)
+        for i, (funcao, nome, mensagem) in enumerate(etapas_pre_produtos):
+            percentual = 5 + int((i / total_pre) * 45)
+            self._reportar_progresso(percentual, mensagem)
+            self._timing(nome, funcao)
+
+        # PRODUTOS: 50% a 88% (range de 38% para progresso granular)
+        self._reportar_progresso(50, "Validando PRODUTOS...")
+        self._timing("validar_PRODUTOS", self.validar_PRODUTOS, progress_base=50, progress_range=38)
+
+        # Relatório final: 88% a 90%
+        self._reportar_progresso(88, "Gerando relatório final...")
+        self._timing("gerar_relatorio_final", self.gerar_relatorio_final)
+
+        self._reportar_progresso(92, "Determinando status...")
 
         # Determinar o status com base em erros e advertências
         if any(dados["erros"] > 0 for dados in self.resultados_validacao.values()):
@@ -3034,10 +3096,12 @@ class PlanilhaValidator:
         else:
             status = "aprovado"
 
+        self._reportar_progresso(95, "Salvando arquivo...")
+
         # Prepara o nome do arquivo
         timestamp = datetime.now().strftime("%Y.%m.%d %H-%M")
         nome_arquivo = f"{timestamp}_{self.emp_nome}_IMPORTAÇÃO.xlsx"
-        
+
         # Salva o workbook em um buffer de memória
         from io import BytesIO
         excel_data = BytesIO()
@@ -3048,6 +3112,8 @@ class PlanilhaValidator:
             {"Planilha": aba, **dados}
             for aba, dados in self.resultados_validacao.items()
         ]
+
+        self._reportar_progresso(100, "Concluído!")
 
         return excel_data, nome_arquivo, status, resultados
 
