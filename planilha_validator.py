@@ -23,7 +23,7 @@ COR_DUPLICADO = PatternFill(
     start_color="C0C0C0", end_color="C0C0C0", fill_type="solid"
 )  # Cinza para duplicados
 
-# Borda para todas as células (exceto nas abas EMPRESA e RESULTADOS DAS VALIDAÇÕES)
+# Borda para todas as células (exceto nas abas EMPRESA e RESULTADO DAS VALIDAÇÕES)
 BORDA = Border(
     left=Side(style="thin"),
     right=Side(style="thin"),
@@ -540,9 +540,9 @@ class PlanilhaValidator:
         )
 
     def limpar_planilha(self):
-        # 1. Remove a aba "RESULTADOS DAS VALIDAÇÕES", se existir.
-        if "RESULTADOS DAS VALIDAÇÕES" in self.wb.sheetnames:
-            del self.wb["RESULTADOS DAS VALIDAÇÕES"]
+        # 1. Remove a aba "RESULTADO DAS VALIDAÇÕES", se existir.
+        if "RESULTADO DAS VALIDAÇÕES" in self.wb.sheetnames:
+            del self.wb["RESULTADO DAS VALIDAÇÕES"]
 
         # 2. Para cada aba do workbook:
         for sheet in self.wb.worksheets:
@@ -595,7 +595,7 @@ class PlanilhaValidator:
         }
 
     def gerar_relatorio_final(self):
-        ws = self.wb.create_sheet("RESULTADOS DAS VALIDAÇÕES", 0)
+        ws = self.wb.create_sheet("RESULTADO DAS VALIDAÇÕES", 0)
         headers = ["Planilha", "Mensagem"]
         ws.append(headers)
 
@@ -738,7 +738,7 @@ class PlanilhaValidator:
             return COR_VALIDO
 
     def aplicar_borda(self, sheet):
-        if sheet.title.upper() in ["EMPRESA", "RESULTADOS DAS VALIDAÇÕES"]:
+        if sheet.title.upper() in ["EMPRESA", "RESULTADO DAS VALIDAÇÕES"]:
             return
         sheet.protection.sheet = False
         # OTIMIZAÇÃO: Aplicar borda apenas nas células com dados
@@ -3051,7 +3051,7 @@ class PlanilhaValidator:
     
     #def salvar_planilha(self, novo_arquivo=None):
             # Alterado para salvar na pasta 'build' em vez da área de trabalho
-     #       self.wb.active = self.wb["RESULTADOS DAS VALIDAÇÕES"]
+     #       self.wb.active = self.wb["RESULTADO DAS VALIDAÇÕES"]
 
             # Obtém o nome base da empresa ou usa um padrão
      #       nome_base = (self.emp_nome or "Planilha_Validada").strip()
