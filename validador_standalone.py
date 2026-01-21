@@ -13,7 +13,7 @@ import tempfile
 import subprocess
 
 # Versao do aplicativo
-APP_VERSION = "1.0.14"
+APP_VERSION = "1.0.2"
 VERSION_URL = "https://gist.githubusercontent.com/SINT-Developer/a38baad856a6149526948d7c0c360ab9/raw/version.json"
 
 # Importar o validador
@@ -94,6 +94,7 @@ def aplicar_atualizacao(novo_exe_path):
         batch_content = f'''@echo off
 echo Aguardando o aplicativo fechar...
 timeout /t 2 /nobreak >nul
+
 echo Aplicando atualizacao...
 copy /Y "{novo_exe_path}" "{exe_atual}"
 if errorlevel 1 (
@@ -101,11 +102,12 @@ if errorlevel 1 (
     timeout /t 2 /nobreak >nul
     copy /Y "{novo_exe_path}" "{exe_atual}"
 )
-echo Iniciando nova versao...
-start "" "{exe_atual}"
+
+echo Atualizacao concluida.
 del "{novo_exe_path}"
 del "%~f0"
 '''
+
 
         with open(batch_path, 'w') as f:
             f.write(batch_content)
