@@ -13,7 +13,7 @@ import tempfile
 import subprocess
 
 # Versao do aplicativo
-APP_VERSION = "1.0.7"
+APP_VERSION = "1.0.8"
 VERSION_URL = "https://gist.githubusercontent.com/SINT-Developer/a38baad856a6149526948d7c0c360ab9/raw/version.json"
 
 # Importar o validador
