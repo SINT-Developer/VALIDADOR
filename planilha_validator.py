@@ -228,6 +228,7 @@ ESTADOS_BRASIL = {
     "CE": "Ceará",
     "DF": "Distrito Federal",
     "ES": "Espírito Santo",
+    "EX": "Exterior",
     "GO": "Goiás",
     "MA": "Maranhão",
     "MT": "Mato Grosso",
