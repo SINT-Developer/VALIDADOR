@@ -4,7 +4,8 @@
       "Bash(python:*)",
       "Bash(pip show:*)",
       "Bash(findstr:*)",
-      "Bash(where:*)"
+      "Bash(where:*)",
+      "Bash(dir /b \"c:\\\\Users\\\\erick.SINTDB\\\\Desktop\\\\Projetos_cursor\\\\NOVO-VALIDADOR\\\\refatorado\")"
     ],
     "deny": [],
     "ask": []

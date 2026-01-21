@@ -2302,16 +2302,19 @@ class PlanilhaValidator:
                 if emp_cod_tipo == "N":
                     if not cp_val.isdigit():
                         cell_cp.fill = COR_ERRO
-                        mensagens.append("CodProduto inválido (deve ser numérico)")
+                        mensagens.append(f"CodProduto '{cp_val}' é alfanumérico, mas a empresa está configurada para código numérico")
                     elif len(cp_val) > emp_cod_tamanho:
                         cell_cp.fill = COR_ERRO
-                        mensagens.append("CodProduto inválido (excede tamanho permitido)")
+                        mensagens.append(f"CodProduto excede tamanho permitido ({len(cp_val)} > {emp_cod_tamanho})")
                     else:
                         cell_cp.fill = COR_VALIDO
                 elif emp_cod_tipo == "A":
-                    if len(cp_val) > emp_cod_tamanho:
+                    if cp_val.isdigit():
                         cell_cp.fill = COR_ERRO
-                        mensagens.append("CodProduto excede tamanho permitido")
+                        mensagens.append(f"CodProduto '{cp_val}' é numérico, mas a empresa está configurada para código alfanumérico")
+                    elif len(cp_val) > emp_cod_tamanho:
+                        cell_cp.fill = COR_ERRO
+                        mensagens.append(f"CodProduto excede tamanho permitido ({len(cp_val)} > {emp_cod_tamanho})")
                     else:
                         cell_cp.fill = COR_VALIDO
                 if cp_val and seen_codproduto.get(cp_val, 0) > 1:
@@ -2329,16 +2332,19 @@ class PlanilhaValidator:
                     elif emp_cod_aux == "N":
                         if not aux_val.isdigit():
                             aux_cell.fill = COR_ERRO
-                            mensagens.append("CodAuxiliarProduto inválido (deve ser numérico)")
+                            mensagens.append(f"CodAuxiliarProduto '{aux_val}' é alfanumérico, mas a empresa está configurada para código numérico")
                         elif emp_cod_aux_tamanho and len(aux_val) > emp_cod_aux_tamanho:
                             aux_cell.fill = COR_ERRO
-                            mensagens.append("CodAuxiliarProduto inválido (excede tamanho permitido)")
+                            mensagens.append(f"CodAuxiliarProduto excede tamanho permitido ({len(aux_val)} > {emp_cod_aux_tamanho})")
                         else:
                             aux_cell.fill = COR_VALIDO
                     elif emp_cod_aux == "A":
-                        if emp_cod_aux_tamanho and len(aux_val) > emp_cod_aux_tamanho:
+                        if aux_val.isdigit():
                             aux_cell.fill = COR_ERRO
-                            mensagens.append("CodAuxiliarProduto inválido (excede tamanho permitido)")
+                            mensagens.append(f"CodAuxiliarProduto '{aux_val}' é numérico, mas a empresa está configurada para código alfanumérico")
+                        elif emp_cod_aux_tamanho and len(aux_val) > emp_cod_aux_tamanho:
+                            aux_cell.fill = COR_ERRO
+                            mensagens.append(f"CodAuxiliarProduto excede tamanho permitido ({len(aux_val)} > {emp_cod_aux_tamanho})")
                         else:
                             aux_cell.fill = COR_VALIDO
                     if seen_codaux.get(aux_val, 0) > 1:
