@@ -7,20 +7,179 @@ from datetime import datetime
 from pathlib import Path
 from io import BytesIO
 import shutil
+import urllib.request
+import json
+import tempfile
+import subprocess
+
+# Versao do aplicativo
+APP_VERSION = "1.0.14"
+VERSION_URL = "https://gist.githubusercontent.com/SINT-Developer/a38baad856a6149526948d7c0c360ab9/raw/version.json"
 
 # Importar o validador
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from planilha_validator import PlanilhaValidator
 
 
+def comparar_versoes(v1, v2):
+    """Compara duas versoes. Retorna 1 se v1 > v2, -1 se v1 < v2, 0 se iguais."""
+    def parse(v):
+        return [int(x) for x in v.replace("v", "").split(".")]
+    p1, p2 = parse(v1), parse(v2)
+    for a, b in zip(p1, p2):
+        if a > b:
+            return 1
+        if a < b:
+            return -1
+    return 0
+
+
+def verificar_atualizacao():
+    """Verifica se ha uma nova versao disponivel. Retorna (nova_versao, download_url) ou (None, None)."""
+    try:
+        import ssl
+        import time
+        # Criar contexto SSL que ignora verificacao (para evitar problemas de certificado)
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+        # Adicionar timestamp para evitar cache do GitHub
+        url_com_cache_bust = f"{VERSION_URL}?t={int(time.time())}"
+        req = urllib.request.Request(url_com_cache_bust, headers={'User-Agent': 'Mozilla/5.0', 'Cache-Control': 'no-cache'})
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            versao_remota = data.get("version", "")
+            download_url = data.get("download_url", "")
+
+            if versao_remota and comparar_versoes(versao_remota, APP_VERSION) > 0:
+                return versao_remota, download_url
+    except Exception as e:
+        # Log do erro para debug (so aparece se rodar com console)
+        print(f"Erro ao verificar atualizacao: {e}")
+    return None, None
+
+
+def baixar_atualizacao(download_url, callback_progresso=None):
+    """Baixa o novo executavel. Retorna o caminho do arquivo baixado ou None."""
+    try:
+        temp_dir = tempfile.gettempdir()
+        temp_file = os.path.join(temp_dir, "Validador_SINT_update.exe")
+
+        def report_progress(block_num, block_size, total_size):
+            if callback_progresso and total_size > 0:
+                percent = int(block_num * block_size * 100 / total_size)
+                callback_progresso(min(percent, 100))
+
+        urllib.request.urlretrieve(download_url, temp_file, report_progress)
+        return temp_file
+    except Exception as e:
+        print(f"Erro ao baixar atualizacao: {e}")
+        return None
+
+
+def aplicar_atualizacao(novo_exe_path):
+    """Cria script batch para substituir o exe e reiniciar o app."""
+    try:
+        exe_atual = sys.executable
+
+        # Se estiver rodando como script Python, nao atualiza
+        if not getattr(sys, 'frozen', False):
+            print("Modo desenvolvimento - atualizacao simulada")
+            return False
+
+        # Criar script batch para atualizar
+        batch_path = os.path.join(tempfile.gettempdir(), "update_validador.bat")
+
+        batch_content = f'''@echo off
+echo Aguardando o aplicativo fechar...
+timeout /t 2 /nobreak >nul
+echo Aplicando atualizacao...
+copy /Y "{novo_exe_path}" "{exe_atual}"
+if errorlevel 1 (
+    echo Erro ao copiar arquivo. Tentando novamente...
+    timeout /t 2 /nobreak >nul
+    copy /Y "{novo_exe_path}" "{exe_atual}"
+)
+echo Iniciando nova versao...
+start "" "{exe_atual}"
+del "{novo_exe_path}"
+del "%~f0"
+'''
+
+        with open(batch_path, 'w') as f:
+            f.write(batch_content)
+
+        # Executar o batch e fechar o app
+        subprocess.Popen(['cmd', '/c', batch_path],
+                        creationflags=subprocess.CREATE_NO_WINDOW)
+        return True
+    except Exception as e:
+        print(f"Erro ao aplicar atualizacao: {e}")
+        return False
+
+
 class ValidadorApp:
     def __init__(self, root, dev_mode=False):
         self.root = root
         self.dev_mode = dev_mode
-        self.root.title("Validador de Planilhas - SINT" + (" [DEV]" if dev_mode else ""))
+        self.root.title(f"Validador de Planilhas - SINT v{APP_VERSION}" + (" [DEV]" if dev_mode else ""))
         self.root.geometry("600x350")
         self.root.resizable(False, False)
         self.setup_ui()
+
+        # Verificar atualizacao em background apos iniciar
+        threading.Thread(target=self._verificar_atualizacao_background, daemon=True).start()
+
+    def _verificar_atualizacao_background(self):
+        """Verifica atualizacao em background e mostra dialogo se houver."""
+        nova_versao, download_url = verificar_atualizacao()
+        if nova_versao and download_url:
+            # Mostrar dialogo na thread principal
+            self.root.after(0, lambda: self._mostrar_dialogo_atualizacao(nova_versao, download_url))
+
+    def _mostrar_dialogo_atualizacao(self, nova_versao, download_url):
+        """Mostra dialogo perguntando se deseja atualizar."""
+        resposta = messagebox.askyesno(
+            "Atualizacao Disponivel",
+            f"Nova versao disponivel: v{nova_versao}\n"
+            f"Versao atual: v{APP_VERSION}\n\n"
+            "Deseja atualizar agora?"
+        )
+        if resposta:
+            self._executar_atualizacao(download_url)
+
+    def _executar_atualizacao(self, download_url):
+        """Executa o processo de atualizacao."""
+        # Criar janela de progresso
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Atualizando...")
+        progress_window.geometry("300x100")
+        progress_window.resizable(False, False)
+        progress_window.transient(self.root)
+        progress_window.grab_set()
+
+        ttk.Label(progress_window, text="Baixando atualizacao...").pack(pady=10)
+        progress_bar = ttk.Progressbar(progress_window, length=250, mode='determinate')
+        progress_bar.pack(pady=10)
+
+        def atualizar_progresso(percent):
+            progress_bar['value'] = percent
+            progress_window.update()
+
+        def fazer_download():
+            novo_exe = baixar_atualizacao(download_url, atualizar_progresso)
+            if novo_exe:
+                progress_window.destroy()
+                if aplicar_atualizacao(novo_exe):
+                    self.root.destroy()  # Fecha o app para o batch substituir
+                else:
+                    messagebox.showerror("Erro", "Nao foi possivel aplicar a atualizacao.")
+            else:
+                progress_window.destroy()
+                messagebox.showerror("Erro", "Falha ao baixar a atualizacao.")
+
+        threading.Thread(target=fazer_download, daemon=True).start()
 
     def setup_ui(self):
         # Frame principal
