@@ -13,7 +13,7 @@ import tempfile
 import subprocess
 
 # Versao do aplicativo
-APP_VERSION = "1.0.8"
+APP_VERSION = "1.0.9"
 VERSION_URL = "https://gist.githubusercontent.com/SINT-Developer/a38baad856a6149526948d7c0c360ab9/raw/version.json"
 
 # Importar o validador
@@ -126,7 +126,7 @@ class ValidadorApp:
         self.root = root
         self.dev_mode = dev_mode
         self.root.title(f"Validador de Planilhas - SINT v{APP_VERSION}" + (" [DEV]" if dev_mode else ""))
-        self.root.geometry("600x350")
+        self.root.geometry("600x380")
         self.root.resizable(False, False)
         self.setup_ui()
 
@@ -174,12 +174,17 @@ class ValidadorApp:
             if novo_exe:
                 progress_window.destroy()
                 if aplicar_atualizacao(novo_exe):
+                    messagebox.showinfo(
+                        "Atualização Concluída",
+                        "A atualização foi aplicada com sucesso!\n\n"
+                        "O aplicativo será fechado. Por favor, abra-o novamente para usar a nova versão."
+                    )
                     self.root.destroy()  # Fecha o app para o batch substituir
                 else:
-                    messagebox.showerror("Erro", "Nao foi possivel aplicar a atualizacao.")
+                    messagebox.showerror("Erro", "Não foi possível aplicar a atualização.")
             else:
                 progress_window.destroy()
-                messagebox.showerror("Erro", "Falha ao baixar a atualizacao.")
+                messagebox.showerror("Erro", "Falha ao baixar a atualização.")
 
         threading.Thread(target=fazer_download, daemon=True).start()
 
@@ -210,11 +215,23 @@ class ValidadorApp:
         )
         browse_button.pack(side=tk.LEFT, padx=5)
 
+        # Frame para opções de salvamento
+        options_frame = ttk.Frame(main_frame)
+        options_frame.pack(fill=tk.X, pady=5)
+
+        self.criar_novo_arquivo = tk.BooleanVar(value=True)
+        checkbox_novo_arquivo = ttk.Checkbutton(
+            options_frame,
+            text="Gerar novo arquivo (desmarcado = sobrescrever original)",
+            variable=self.criar_novo_arquivo
+        )
+        checkbox_novo_arquivo.pack(anchor=tk.W)
+
         # Botão de validação
         validate_button = ttk.Button(
             main_frame, text="Validar Planilha", command=self.start_validation
         )
-        validate_button.pack(pady=20)
+        validate_button.pack(pady=15)
 
         # Barra de progresso
         self.progress_var = tk.DoubleVar()
@@ -251,7 +268,7 @@ class ValidadorApp:
         # Encontrar e desabilitar widgets interativos usando uma função recursiva
         def disable_widgets(parent):
             for child in parent.winfo_children():
-                if isinstance(child, (ttk.Button, ttk.Entry, tk.Button, tk.Entry)):
+                if isinstance(child, (ttk.Button, ttk.Entry, ttk.Checkbutton, tk.Button, tk.Entry, tk.Checkbutton)):
                     try:
                         child.configure(state="disabled")
                     except:
@@ -299,19 +316,28 @@ class ValidadorApp:
             # Verificar se deve gerar planilha de etiquetas
             etiquetas_result = validator.gerar_planilha_etiquetas()
 
-            # Salvar arquivos na pasta do executável
-            desktop_path = os.path.dirname(os.path.abspath(sys.argv[0]))
+            # Determinar onde salvar com base na opção do usuário
+            criar_novo = self.criar_novo_arquivo.get()
+
+            if criar_novo:
+                # Salvar novo arquivo na pasta do executável
+                desktop_path = os.path.dirname(os.path.abspath(sys.argv[0]))
+                output_path = os.path.join(desktop_path, nome_arquivo)
+            else:
+                # Sobrescrever o arquivo original
+                output_path = file_path
 
             # Salvar o arquivo principal
-            output_path = os.path.join(desktop_path, nome_arquivo)
             with open(output_path, "wb") as f:
                 f.write(excel_data.getbuffer())
 
-            # Salvar o arquivo de etiquetas, se existir
+            # Salvar o arquivo de etiquetas, se existir (sempre como novo arquivo)
             etiquetas_path = None
             if etiquetas_result:
                 etiquetas_data, etiquetas_nome = etiquetas_result
-                etiquetas_path = os.path.join(desktop_path, etiquetas_nome)
+                # Etiquetas sempre na mesma pasta do arquivo de saída
+                etiquetas_dir = os.path.dirname(output_path)
+                etiquetas_path = os.path.join(etiquetas_dir, etiquetas_nome)
                 with open(etiquetas_path, "wb") as f:
                     f.write(etiquetas_data.getbuffer())
 
@@ -323,7 +349,10 @@ class ValidadorApp:
             }.get(status, "Validação completa")
 
             message = f"Validação concluída com status: {status_text}\n\n"
-            message += f"Arquivo salvo em:\n{output_path}"
+            if criar_novo:
+                message += f"Novo arquivo salvo em:\n{output_path}"
+            else:
+                message += f"Arquivo original atualizado:\n{output_path}"
 
             if etiquetas_path:
                 message += f"\n\nArquivo de etiquetas salvo em:\n{etiquetas_path}"
@@ -331,7 +360,7 @@ class ValidadorApp:
             # Reabilitar interface usando a mesma abordagem recursiva
             def enable_widgets(parent):
                 for child in parent.winfo_children():
-                    if isinstance(child, (ttk.Button, ttk.Entry, tk.Button, tk.Entry)):
+                    if isinstance(child, (ttk.Button, ttk.Entry, ttk.Checkbutton, tk.Button, tk.Entry, tk.Checkbutton)):
                         try:
                             child.configure(state="normal")
                         except:
@@ -360,7 +389,7 @@ class ValidadorApp:
             # Reabilitar interface usando a mesma abordagem recursiva
             def enable_widgets(parent):
                 for child in parent.winfo_children():
-                    if isinstance(child, (ttk.Button, ttk.Entry, tk.Button, tk.Entry)):
+                    if isinstance(child, (ttk.Button, ttk.Entry, ttk.Checkbutton, tk.Button, tk.Entry, tk.Checkbutton)):
                         try:
                             child.configure(state="normal")
                         except:

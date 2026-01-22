@@ -31,6 +31,34 @@ BORDA = Border(
     bottom=Side(style="thin"),
 )
 
+# Estilo do cabeçalho (fundo preto, letra branca)
+ESTILO_CABECALHO_FILL = PatternFill(start_color="000000", end_color="000000", fill_type="solid")
+ESTILO_CABECALHO_FONT = Font(color="FFFFFF", bold=True)
+
+# Cabeçalhos esperados de cada aba (para validação e "colinha")
+CABECALHOS_ESPERADOS = {
+    "FILIAL": ["CodFilial", "Filial", "TituloAdicional1", "TituloAdicional2", "Logotipo"],
+    "REPR": ["CodRepresentante", "Representante"],
+    "PAGTO": ["CodCondPagamento", "CondPagamento", "TipoCondPagamento", "CondPagamentoPadrao",
+              "VlrMinimoPedido", "VlrMinimoComEstAtual", "VlrMinimoComEstFuturo",
+              "VlrMinimoComEstEsgotado", "Desconto1", "Desconto2", "Desconto3"],
+    "PAGTOFILIAL": ["CodCondPagamento", "CodFilial", "VlrMinimoPedido"],
+    "TRANSP": ["CodTransportadora", "Transportadora", "TransportadoraPadrao"],
+    "ESTADOS": ["SiglaEstado", "NomeEstado", "Padrao", "ClienteNovoTabPreco"],
+    "CLIENTES": ["CodCliente", "NomeFantasia", "CodRepresentante", "RazaoSocial", "Logradouro",
+                 "Bairro", "Cidade", "UF", "CEP", "CNPJCPF", "IERG", "Observacao",
+                 "CodTransportadora", "NomeTransportadora", "PrecoTabela", "NomeContato",
+                 "EMail", "DDD", "Telefone1", "Telefone2", "FAX"],
+    "FAMILIAS": ["CodFamilia", "Familia", "MultiploFamilia", "MinimoFamilia", "DescontoFamilia"],
+    "ESTILOS": ["CodEstilo", "Estilo"],
+    "PRODUTOS": ["CodProduto", "CodAuxiliarProduto", "Produto", "CodFilial", "CodFamilia",
+                 "CodEstilo", "QtdeMultipla", "QtdeMinima", "QtdeTabela1", "QtdeTabela2",
+                 "QtdeTabela3", "PrecoTabela1", "PrecoTabela2", "PrecoTabela3",
+                 "LimiteDescIndividual", "MultiploGrade", "DescontoGrade", "PrecoPromocional",
+                 "AliquotaIPI", "TipoVendaSemEstoque", "QtdeEstoqueAtual", "QtdeEstoqueFuturo",
+                 "DtEstoqueFuturo"],
+}
+
 # Dicionário de Estados (para aba ESTADOS)
 # Função para converter preços com pontos para formato com vírgula (SQL-friendly)
 def convert_price_to_comma_format(value_str):
@@ -3095,7 +3123,115 @@ class PlanilhaValidator:
 
             # Retorna o caminho do arquivo salvo
             #return caminho_arquivo
-        
+
+    def verificar_cabecalhos_aba(self, sheet, nome_aba):
+        """
+        Verifica se os cabeçalhos da aba estão corretos.
+        Retorna True se todos estão corretos, False se há algum problema.
+        """
+        if nome_aba.upper() not in CABECALHOS_ESPERADOS:
+            return True  # Aba não mapeada, ignora
+
+        esperados = CABECALHOS_ESPERADOS[nome_aba.upper()]
+        cabecalhos_atuais = [cell.value for cell in sheet[1]]
+
+        # Verificar se todos os cabeçalhos esperados existem (case insensitive)
+        cabecalhos_atuais_lower = [str(c).strip().lower() if c else "" for c in cabecalhos_atuais]
+        esperados_lower = [e.lower() for e in esperados]
+
+        for esperado in esperados_lower:
+            if esperado not in cabecalhos_atuais_lower:
+                return False
+
+        return True
+
+    def inserir_colinha_cabecalhos(self, sheet, nome_aba):
+        """
+        Insere uma linha de referência (colinha) na linha 1 com os cabeçalhos corretos
+        se algum cabeçalho estiver faltando ou errado.
+        Move todos os dados uma linha para baixo.
+        """
+        if nome_aba.upper() not in CABECALHOS_ESPERADOS:
+            return False  # Aba não mapeada, não faz nada
+
+        if self.verificar_cabecalhos_aba(sheet, nome_aba):
+            return False  # Cabeçalhos OK, não precisa inserir colinha
+
+        esperados = CABECALHOS_ESPERADOS[nome_aba.upper()]
+
+        # Inserir nova linha no topo
+        sheet.insert_rows(1)
+
+        # Preencher a nova linha 1 com os cabeçalhos esperados (colinha)
+        for col_idx, cabecalho in enumerate(esperados, start=1):
+            cell = sheet.cell(row=1, column=col_idx)
+            cell.value = cabecalho
+            # Aplicar estilo diferenciado para a colinha (fundo cinza claro, itálico)
+            cell.fill = PatternFill(start_color="D3D3D3", end_color="D3D3D3", fill_type="solid")
+            cell.font = Font(italic=True, color="333333")
+
+        return True
+
+    def aplicar_formatacao_final_aba(self, sheet, nome_aba):
+        """
+        Aplica formatação final em uma aba:
+        1. Cabeçalho com fundo preto e letra branca
+        2. Desocultar todas as colunas
+        3. Aplicar bordas em todas as células com dados
+        """
+        if nome_aba.upper() in ["EMPRESA", "RESULTADO DAS VALIDAÇÕES"]:
+            return  # Não formatar essas abas
+
+        # 1. Desocultar todas as colunas
+        for col_letter in sheet.column_dimensions:
+            sheet.column_dimensions[col_letter].hidden = False
+
+        # 2. Formatar cabeçalho (primeira linha com dados)
+        # Identificar qual é a linha do cabeçalho real (pode ser 1 ou 2 se tiver colinha)
+        linha_cabecalho = 1
+
+        # Verificar se a primeira célula parece ser uma colinha (itálico)
+        primeira_celula = sheet.cell(row=1, column=1)
+        if primeira_celula.font and primeira_celula.font.italic:
+            linha_cabecalho = 2  # Colinha existe, cabeçalho real é na linha 2
+
+        # Aplicar estilo no cabeçalho
+        for cell in sheet[linha_cabecalho]:
+            if cell.value is not None:
+                cell.fill = ESTILO_CABECALHO_FILL
+                cell.font = ESTILO_CABECALHO_FONT
+
+        # 3. Aplicar bordas em todas as células com dados
+        max_row = sheet.max_row
+        max_col = sheet.max_column
+
+        if max_row > 0 and max_col > 0:
+            for row in sheet.iter_rows(min_row=1, max_row=max_row, min_col=1, max_col=max_col):
+                for cell in row:
+                    if cell.value is not None:
+                        cell.border = BORDA
+
+    def finalizar_todas_abas(self):
+        """
+        Aplica formatação final em todas as abas (exceto EMPRESA).
+        Esta função deve ser chamada como ÚLTIMO processo da validação.
+
+        1. Insere 'colinha' de cabeçalhos se necessário
+        2. Aplica formatação final (cabeçalho preto/branco, desocultar colunas, bordas)
+        """
+        abas_para_finalizar = ["FILIAL", "REPR", "PAGTO", "PAGTOFILIAL", "TRANSP",
+                               "ESTADOS", "CLIENTES", "FAMILIAS", "ESTILOS", "PRODUTOS"]
+
+        for nome_aba in abas_para_finalizar:
+            if nome_aba in self.wb.sheetnames:
+                sheet = self.wb[nome_aba]
+
+                # 1. Inserir colinha se cabeçalhos estiverem errados
+                self.inserir_colinha_cabecalhos(sheet, nome_aba)
+
+                # 2. Aplicar formatação final
+                self.aplicar_formatacao_final_aba(sheet, nome_aba)
+
     def _timing(self, nome, funcao, *args, **kwargs):
         """Executa função e registra tempo se em modo dev."""
         import time
@@ -3142,6 +3278,10 @@ class PlanilhaValidator:
         # Relatório final: 88% a 90%
         self._reportar_progresso(88, "Gerando relatório final...")
         self._timing("gerar_relatorio_final", self.gerar_relatorio_final)
+
+        # Finalização: aplicar formatação final e colinha em todas as abas (exceto EMPRESA)
+        self._reportar_progresso(90, "Aplicando formatação final...")
+        self._timing("finalizar_todas_abas", self.finalizar_todas_abas)
 
         self._reportar_progresso(92, "Determinando status...")
 

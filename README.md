@@ -114,4 +114,4 @@ O validador gera:
 
 ---
 
-Desenvolvido por SINT
+Desenvolvido por Erick
