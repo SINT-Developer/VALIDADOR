@@ -13,7 +13,7 @@ import tempfile
 import subprocess
 
 # Versao do aplicativo
-APP_VERSION = "1.0.9"
+APP_VERSION = "1.0.10"
 VERSION_URL = "https://gist.githubusercontent.com/SINT-Developer/a38baad856a6149526948d7c0c360ab9/raw/version.json"
 
 # Importar o validador
@@ -319,10 +319,12 @@ class ValidadorApp:
             # Determinar onde salvar com base na opção do usuário
             criar_novo = self.criar_novo_arquivo.get()
 
+            # Sempre salvar na mesma pasta da planilha original
+            pasta_planilha = os.path.dirname(file_path)
+
             if criar_novo:
-                # Salvar novo arquivo na pasta do executável
-                desktop_path = os.path.dirname(os.path.abspath(sys.argv[0]))
-                output_path = os.path.join(desktop_path, nome_arquivo)
+                # Salvar novo arquivo na pasta da planilha original
+                output_path = os.path.join(pasta_planilha, nome_arquivo)
             else:
                 # Sobrescrever o arquivo original
                 output_path = file_path
