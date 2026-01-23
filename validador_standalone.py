@@ -13,7 +13,7 @@ import tempfile
 import subprocess
 
 # Versao do aplicativo
-APP_VERSION = "1.0.10"
+APP_VERSION = "1.0.14"
 VERSION_URL = "https://gist.githubusercontent.com/SINT-Developer/a38baad856a6149526948d7c0c360ab9/raw/version.json"
 
 # Importar o validador
@@ -91,23 +91,41 @@ def aplicar_atualizacao(novo_exe_path):
         # Criar script batch para atualizar
         batch_path = os.path.join(tempfile.gettempdir(), "update_validador.bat")
 
+        # Obter nome do processo para poder verificar se fechou
+        exe_nome = os.path.basename(exe_atual)
+
         batch_content = f'''@echo off
 echo Aguardando o aplicativo fechar...
-timeout /t 2 /nobreak >nul
+timeout /t 3 /nobreak >nul
 
-echo Aplicando atualizacao...
+:check_process
+tasklist /FI "IMAGENAME eq {exe_nome}" 2>NUL | find /I "{exe_nome}" >NUL
+if not errorlevel 1 (
+    echo Aplicativo ainda em execucao, aguardando...
+    timeout /t 2 /nobreak >nul
+    goto check_process
+)
+
+echo Aplicativo fechado. Aplicando atualizacao...
+timeout /t 1 /nobreak >nul
+
 copy /Y "{novo_exe_path}" "{exe_atual}"
 if errorlevel 1 (
     echo Erro ao copiar arquivo. Tentando novamente...
-    timeout /t 2 /nobreak >nul
+    timeout /t 3 /nobreak >nul
     copy /Y "{novo_exe_path}" "{exe_atual}"
 )
 
-echo Atualizacao concluida.
-del "{novo_exe_path}"
+if errorlevel 1 (
+    echo ERRO: Nao foi possivel atualizar o aplicativo.
+    pause
+) else (
+    echo Atualizacao concluida com sucesso!
+)
+
+del "{novo_exe_path}" 2>nul
 del "%~f0"
 '''
-
 
         with open(batch_path, 'w') as f:
             f.write(batch_content)
@@ -126,7 +144,7 @@ class ValidadorApp:
         self.root = root
         self.dev_mode = dev_mode
         self.root.title(f"Validador de Planilhas - SINT v{APP_VERSION}" + (" [DEV]" if dev_mode else ""))
-        self.root.geometry("600x380")
+        self.root.geometry("600x420")
         self.root.resizable(False, False)
         self.setup_ui()
 
@@ -227,6 +245,30 @@ class ValidadorApp:
         )
         checkbox_novo_arquivo.pack(anchor=tk.W)
 
+        # Frame para versão SRPPWIN
+        versao_frame = ttk.Frame(main_frame)
+        versao_frame.pack(fill=tk.X, pady=5)
+
+        versao_label = ttk.Label(versao_frame, text="Versão SRPPWIN:")
+        versao_label.pack(side=tk.LEFT)
+
+        self.versao_srppwin = tk.StringVar(value="19.1.5")
+        radio_v19 = ttk.Radiobutton(
+            versao_frame,
+            text="19.1.5",
+            variable=self.versao_srppwin,
+            value="19.1.5"
+        )
+        radio_v19.pack(side=tk.LEFT, padx=(10, 5))
+
+        radio_v20 = ttk.Radiobutton(
+            versao_frame,
+            text="20.1.0",
+            variable=self.versao_srppwin,
+            value="20.1.0"
+        )
+        radio_v20.pack(side=tk.LEFT, padx=5)
+
         # Botão de validação
         validate_button = ttk.Button(
             main_frame, text="Validar Planilha", command=self.start_validation
@@ -268,7 +310,7 @@ class ValidadorApp:
         # Encontrar e desabilitar widgets interativos usando uma função recursiva
         def disable_widgets(parent):
             for child in parent.winfo_children():
-                if isinstance(child, (ttk.Button, ttk.Entry, ttk.Checkbutton, tk.Button, tk.Entry, tk.Checkbutton)):
+                if isinstance(child, (ttk.Button, ttk.Entry, ttk.Checkbutton, ttk.Radiobutton, tk.Button, tk.Entry, tk.Checkbutton, tk.Radiobutton)):
                     try:
                         child.configure(state="disabled")
                     except:
@@ -305,6 +347,10 @@ class ValidadorApp:
             if self.dev_mode:
                 validator._dev_mode = True
                 validator._timings = {}
+
+            # Definir versão SRPPWIN escolhida pelo usuário
+            versao_srppwin = self.versao_srppwin.get()
+            validator.versao_srppwin = versao_srppwin
 
             # Processar a validação (progresso é reportado automaticamente pelo validador)
             t0 = time.perf_counter()
@@ -362,7 +408,7 @@ class ValidadorApp:
             # Reabilitar interface usando a mesma abordagem recursiva
             def enable_widgets(parent):
                 for child in parent.winfo_children():
-                    if isinstance(child, (ttk.Button, ttk.Entry, ttk.Checkbutton, tk.Button, tk.Entry, tk.Checkbutton)):
+                    if isinstance(child, (ttk.Button, ttk.Entry, ttk.Checkbutton, ttk.Radiobutton, tk.Button, tk.Entry, tk.Checkbutton, tk.Radiobutton)):
                         try:
                             child.configure(state="normal")
                         except:
@@ -391,7 +437,7 @@ class ValidadorApp:
             # Reabilitar interface usando a mesma abordagem recursiva
             def enable_widgets(parent):
                 for child in parent.winfo_children():
-                    if isinstance(child, (ttk.Button, ttk.Entry, ttk.Checkbutton, tk.Button, tk.Entry, tk.Checkbutton)):
+                    if isinstance(child, (ttk.Button, ttk.Entry, ttk.Checkbutton, ttk.Radiobutton, tk.Button, tk.Entry, tk.Checkbutton, tk.Radiobutton)):
                         try:
                             child.configure(state="normal")
                         except:

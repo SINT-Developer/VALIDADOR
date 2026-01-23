@@ -590,18 +590,17 @@ class PlanilhaValidator:
                     idx + 1
                 )  # openpyxl trabalha com índices 1-base para exclusão
 
-            # Se a aba for "PRODUTOS", também remova a coluna "duplicados"
-            if sheet.title.upper() == "PRODUTOS":
-                header = self.get_header_map(
-                    sheet
-                )  # Atualize o header, pois ele pode ter mudado
-                indices_duplicados = [
-                    idx
-                    for key, idx in header.items()
-                    if key.strip().lower() == "duplicados"
-                ]
-                for idx in sorted(indices_duplicados, reverse=True):
-                    sheet.delete_cols(idx + 1)
+            # Remover coluna "duplicados" de todas as abas (PRODUTOS, CLIENTES, etc.)
+            header = self.get_header_map(
+                sheet
+            )  # Atualize o header, pois ele pode ter mudado
+            indices_duplicados = [
+                idx
+                for key, idx in header.items()
+                if key.strip().lower() == "duplicados"
+            ]
+            for idx in sorted(indices_duplicados, reverse=True):
+                sheet.delete_cols(idx + 1)
 
             # Remover coluna "Status da Linha" (exceto em modo dev)
             if not self.dev_mode:
@@ -770,6 +769,7 @@ class PlanilhaValidator:
             or "duplicado" in m.lower()
             or "ausente" in m.lower()
             or "inexistente" in m.lower()
+            or "vazio" in m.lower()
             for m in mensagens
         ):
             return COR_ERRO
@@ -829,7 +829,44 @@ class PlanilhaValidator:
         for r in sorted(rows_to_delete, reverse=True):
             sheet.delete_rows(r)
 
+    def excluir_linhas_duplicadas_clientes(self, sheet, header):
+        """
+        Remove linhas completamente idênticas na aba CLIENTES.
+        Similar ao tratamento de PRODUTOS.
+        """
+        ignore_cols = set()
+        for key, idx in header.items():
+            if key.lower() in ["duplicados", "resultado"]:
+                ignore_cols.add(idx)
 
+        # Verificação rápida de linha vazia usando CodCliente
+        idx_codcliente = header.get("CodCliente")
+
+        seen = {}
+        rows_to_delete = []
+        for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
+            # Verificação rápida de linha vazia
+            if idx_codcliente is not None:
+                first_val = row[idx_codcliente].value
+                if first_val is None or (isinstance(first_val, str) and not first_val.strip()):
+                    continue
+            elif row[0].value is None:
+                continue
+
+            # Criar tupla apenas com valores relevantes
+            row_tuple = tuple(
+                str(cell.value).strip() if cell.value is not None else ""
+                for idx, cell in enumerate(row)
+                if idx not in ignore_cols
+            )
+            if row_tuple in seen:
+                rows_to_delete.append(row[0].row)
+            else:
+                seen[row_tuple] = row[0].row
+
+        # Deletar em ordem reversa para não afetar índices
+        for r in sorted(rows_to_delete, reverse=True):
+            sheet.delete_rows(r)
 
     @staticmethod
     def corrigir_cabecalho(sheet, expected):
@@ -1829,6 +1866,9 @@ class PlanilhaValidator:
         # Chama o método para normalizar (corrigir) os cabeçalhos
         header, corrections = self.corrigir_cabecalho(sheet, expected)
 
+        # Excluir linhas completamente duplicadas (todas as colunas iguais)
+        self.excluir_linhas_duplicadas_clientes(sheet, header)
+
         # Se houver correções, monta a mensagem informando apenas os cabeçalhos que foram alterados
         header_warning = ""
         if corrections:
@@ -2337,10 +2377,8 @@ class PlanilhaValidator:
                     else:
                         cell_cp.fill = COR_VALIDO
                 elif emp_cod_tipo == "A":
-                    if cp_val.isdigit():
-                        cell_cp.fill = COR_ERRO
-                        mensagens.append(f"CodProduto '{cp_val}' é numérico, mas a empresa está configurada para código alfanumérico")
-                    elif len(cp_val) > emp_cod_tamanho:
+                    # Alfanumérico aceita letras e/ou números (não precisa ter ambos)
+                    if len(cp_val) > emp_cod_tamanho:
                         cell_cp.fill = COR_ERRO
                         mensagens.append(f"CodProduto excede tamanho permitido ({len(cp_val)} > {emp_cod_tamanho})")
                     else:
@@ -2367,10 +2405,8 @@ class PlanilhaValidator:
                         else:
                             aux_cell.fill = COR_VALIDO
                     elif emp_cod_aux == "A":
-                        if aux_val.isdigit():
-                            aux_cell.fill = COR_ERRO
-                            mensagens.append(f"CodAuxiliarProduto '{aux_val}' é numérico, mas a empresa está configurada para código alfanumérico")
-                        elif emp_cod_aux_tamanho and len(aux_val) > emp_cod_aux_tamanho:
+                        # Alfanumérico aceita letras e/ou números (não precisa ter ambos)
+                        if emp_cod_aux_tamanho and len(aux_val) > emp_cod_aux_tamanho:
                             aux_cell.fill = COR_ERRO
                             mensagens.append(f"CodAuxiliarProduto excede tamanho permitido ({len(aux_val)} > {emp_cod_aux_tamanho})")
                         else:
@@ -2576,30 +2612,57 @@ class PlanilhaValidator:
                 mensagens.append("PrecoTabela1 ausente")
             else:
                 try:
-                    # Agora as fórmulas já foram convertidas para valores
-                    if cell_pt1.value is None:
+                    # Verificar se é "-" ou valor inválido
+                    valor_raw = cell_pt1.value
+                    if valor_raw is None:
                         raise ValueError("Valor vazio")
-                    elif isinstance(cell_pt1.value, (int, float)):
-                        pt1_val = float(cell_pt1.value)
-                        # Converter para formato com vírgula para manter consistência
-                        cell_pt1.value = f"{pt1_val:.2f}".replace(".", ",")
+
+                    # Tratar "-" como erro
+                    if isinstance(valor_raw, str) and valor_raw.strip() in ["-", ""]:
+                        cell_pt1.fill = COR_ERRO
+                        cell_pt1.value = ""
+                        mensagens.append("PrecoTabela1 inválido (valor '-' ou vazio)")
+                        pt1_val = None
+                    elif isinstance(valor_raw, (int, float)):
+                        pt1_val = float(valor_raw)
+                        # Verificar se é 0 ou negativo
+                        if pt1_val <= 0:
+                            cell_pt1.fill = COR_ERRO
+                            mensagens.append("PrecoTabela1 inválido (valor zero ou negativo)")
+                            pt1_val = None
+                        elif pt1_val > 999999.99:
+                            cell_pt1.fill = COR_ERRO
+                            mensagens.append("PrecoTabela1 fora do intervalo")
+                            pt1_val = None
+                        else:
+                            # Converter para formato com vírgula para manter consistência
+                            cell_pt1.value = f"{pt1_val:.2f}".replace(".", ",")
+                            cell_pt1.fill = COR_VALIDO
                     else:
                         # Tratar como string e converter formato
                         valor_str = self.get_valor_string(cell_pt1)
-                        
-                        # Converter pontos para vírgulas inteligentemente
-                        converted_value, foi_alterado = convert_price_to_comma_format(valor_str)
-                        if foi_alterado:
-                            mensagens.append(f"Advertencia: PrecoTabela1 corrigido de '{valor_str}' para '{converted_value}'")
-                        
-                        cell_pt1.value = converted_value  # Atualiza a célula com formato correto
-                        pt1_val = float(converted_value.replace(",", "."))
-                    
-                    if not (0.01 <= pt1_val <= 999999.99):
-                        cell_pt1.fill = COR_ERRO
-                        mensagens.append("PrecoTabela1 fora do intervalo")
-                    else:
-                        cell_pt1.fill = COR_VALIDO
+
+                        # Verificar se é "-" ou "0"
+                        if valor_str.strip() in ["-", "0", "0,00", "0.00", ""]:
+                            cell_pt1.fill = COR_ERRO
+                            cell_pt1.value = ""
+                            mensagens.append("PrecoTabela1 inválido (valor '-' ou zero)")
+                            pt1_val = None
+                        else:
+                            # Converter pontos para vírgulas inteligentemente
+                            converted_value, foi_alterado = convert_price_to_comma_format(valor_str)
+                            if foi_alterado:
+                                mensagens.append(f"Advertencia: PrecoTabela1 corrigido de '{valor_str}' para '{converted_value}'")
+
+                            cell_pt1.value = converted_value  # Atualiza a célula com formato correto
+                            pt1_val = float(converted_value.replace(",", "."))
+
+                            if not (0.01 <= pt1_val <= 999999.99):
+                                cell_pt1.fill = COR_ERRO
+                                mensagens.append("PrecoTabela1 fora do intervalo")
+                                pt1_val = None
+                            else:
+                                cell_pt1.fill = COR_VALIDO
                 except:
                     cell_pt1.fill = COR_ERRO
                     mensagens.append("PrecoTabela1 inválido")
@@ -2610,37 +2673,66 @@ class PlanilhaValidator:
             pt2_val = None
             if idx_pt2 is not None:
                 cell_pt2 = row[idx_pt2]
-                if cell_pt2.value:
+                if cell_pt2.value is not None and str(cell_pt2.value).strip() != "":
                     try:
-                        # Agora as fórmulas já foram convertidas para valores
-                        if cell_pt2.value is None:
-                            raise ValueError("Valor vazio")
-                        elif isinstance(cell_pt2.value, (int, float)):
-                            pt2_val = float(cell_pt2.value)
-                            # Converter para formato com vírgula para manter consistência
-                            cell_pt2.value = f"{pt2_val:.2f}".replace(".", ",")
+                        valor_raw = cell_pt2.value
+
+                        # Tratar "-" como erro
+                        if isinstance(valor_raw, str) and valor_raw.strip() in ["-"]:
+                            cell_pt2.fill = COR_ERRO
+                            cell_pt2.value = ""
+                            mensagens.append("PrecoTabela2 inválido (valor '-')")
+                            pt2_val = None
+                        elif isinstance(valor_raw, (int, float)):
+                            pt2_val = float(valor_raw)
+                            # Verificar se é 0 ou negativo
+                            if pt2_val <= 0:
+                                cell_pt2.fill = COR_ERRO
+                                mensagens.append("PrecoTabela2 inválido (valor zero ou negativo)")
+                                pt2_val = None
+                            elif pt2_val > 999999.99:
+                                cell_pt2.fill = COR_ERRO
+                                mensagens.append("PrecoTabela2 fora do intervalo")
+                                pt2_val = None
+                            else:
+                                # Converter para formato com vírgula para manter consistência
+                                cell_pt2.value = f"{pt2_val:.2f}".replace(".", ",")
+                                # Verificar hierarquia
+                                if (qtde1_preenchida and qtde2_preenchida) and pt1_val and pt2_val >= pt1_val:
+                                    cell_pt2.fill = COR_ERRO
+                                    mensagens.append("PrecoTabela2 deve ser menor que PrecoTabela1")
+                                else:
+                                    cell_pt2.fill = COR_VALIDO
                         else:
                             # Tratar como string e converter formato
                             valor_str = self.get_valor_string(cell_pt2)
-                            
-                            # Converter pontos para vírgulas inteligentemente
-                            converted_value, foi_alterado = convert_price_to_comma_format(valor_str)
-                            if foi_alterado:
-                                mensagens.append(f"Advertencia: PrecoTabela2 corrigido de '{valor_str}' para '{converted_value}'")
-                            
-                            cell_pt2.value = converted_value  # Atualiza a célula com formato correto
-                            pt2_val = float(converted_value.replace(",", "."))
-                        
-                        if not (0.01 <= pt2_val <= 999999.99):
-                            cell_pt2.fill = COR_ERRO
-                            mensagens.append("PrecoTabela2 fora do intervalo")
-                        else:
-                            # Só aplicar hierarquia se QtdeTabela1 e QtdeTabela2 estiverem preenchidas
-                            if (qtde1_preenchida and qtde2_preenchida) and pt1_val and pt2_val >= pt1_val:
+
+                            # Verificar se é "-" ou "0"
+                            if valor_str.strip() in ["-", "0", "0,00", "0.00"]:
                                 cell_pt2.fill = COR_ERRO
-                                mensagens.append("PrecoTabela2 deve ser menor que PrecoTabela1")
+                                cell_pt2.value = ""
+                                mensagens.append("PrecoTabela2 inválido (valor '-' ou zero)")
+                                pt2_val = None
                             else:
-                                cell_pt2.fill = COR_VALIDO
+                                # Converter pontos para vírgulas inteligentemente
+                                converted_value, foi_alterado = convert_price_to_comma_format(valor_str)
+                                if foi_alterado:
+                                    mensagens.append(f"Advertencia: PrecoTabela2 corrigido de '{valor_str}' para '{converted_value}'")
+
+                                cell_pt2.value = converted_value  # Atualiza a célula com formato correto
+                                pt2_val = float(converted_value.replace(",", "."))
+
+                                if not (0.01 <= pt2_val <= 999999.99):
+                                    cell_pt2.fill = COR_ERRO
+                                    mensagens.append("PrecoTabela2 fora do intervalo")
+                                    pt2_val = None
+                                else:
+                                    # Verificar hierarquia
+                                    if (qtde1_preenchida and qtde2_preenchida) and pt1_val and pt2_val >= pt1_val:
+                                        cell_pt2.fill = COR_ERRO
+                                        mensagens.append("PrecoTabela2 deve ser menor que PrecoTabela1")
+                                    else:
+                                        cell_pt2.fill = COR_VALIDO
                     except:
                         cell_pt2.fill = COR_ERRO
                         mensagens.append("PrecoTabela2 inválido")
@@ -2648,39 +2740,69 @@ class PlanilhaValidator:
 
             # Validar PrecoTabela3
             idx_pt3 = header.get("PrecoTabela3")
+            pt3_val = None
             if idx_pt3 is not None:
                 cell_pt3 = row[idx_pt3]
-                if cell_pt3.value:
+                if cell_pt3.value is not None and str(cell_pt3.value).strip() != "":
                     try:
-                        # Agora as fórmulas já foram convertidas para valores
-                        if cell_pt3.value is None:
-                            raise ValueError("Valor vazio")
-                        elif isinstance(cell_pt3.value, (int, float)):
-                            pt3_val = float(cell_pt3.value)
-                            # Converter para formato com vírgula para manter consistência
-                            cell_pt3.value = f"{pt3_val:.2f}".replace(".", ",")
+                        valor_raw = cell_pt3.value
+
+                        # Tratar "-" como erro
+                        if isinstance(valor_raw, str) and valor_raw.strip() in ["-"]:
+                            cell_pt3.fill = COR_ERRO
+                            cell_pt3.value = ""
+                            mensagens.append("PrecoTabela3 inválido (valor '-')")
+                            pt3_val = None
+                        elif isinstance(valor_raw, (int, float)):
+                            pt3_val = float(valor_raw)
+                            # Verificar se é 0 ou negativo
+                            if pt3_val <= 0:
+                                cell_pt3.fill = COR_ERRO
+                                mensagens.append("PrecoTabela3 inválido (valor zero ou negativo)")
+                                pt3_val = None
+                            elif pt3_val > 999999.99:
+                                cell_pt3.fill = COR_ERRO
+                                mensagens.append("PrecoTabela3 fora do intervalo")
+                                pt3_val = None
+                            else:
+                                # Converter para formato com vírgula para manter consistência
+                                cell_pt3.value = f"{pt3_val:.2f}".replace(".", ",")
+                                # Verificar hierarquia
+                                if (qtde1_preenchida and qtde2_preenchida and qtde3_preenchida) and pt2_val and pt3_val >= pt2_val:
+                                    cell_pt3.fill = COR_ERRO
+                                    mensagens.append("PrecoTabela3 deve ser menor que PrecoTabela2")
+                                else:
+                                    cell_pt3.fill = COR_VALIDO
                         else:
                             # Tratar como string e converter formato
                             valor_str = self.get_valor_string(cell_pt3)
-                            
-                            # Converter pontos para vírgulas inteligentemente
-                            converted_value, foi_alterado = convert_price_to_comma_format(valor_str)
-                            if foi_alterado:
-                                mensagens.append(f"Advertencia: PrecoTabela3 corrigido de '{valor_str}' para '{converted_value}'")
-                            
-                            cell_pt3.value = converted_value  # Atualiza a célula com formato correto
-                            pt3_val = float(converted_value.replace(",", "."))
-                        
-                        if not (0.01 <= pt3_val <= 999999.99):
-                            cell_pt3.fill = COR_ERRO
-                            mensagens.append("PrecoTabela3 fora do intervalo")
-                        else:
-                            # Só aplicar hierarquia se QtdeTabela1, QtdeTabela2 e QtdeTabela3 estiverem preenchidas
-                            if (qtde1_preenchida and qtde2_preenchida and qtde3_preenchida) and pt2_val and pt3_val >= pt2_val:
+
+                            # Verificar se é "-" ou "0"
+                            if valor_str.strip() in ["-", "0", "0,00", "0.00"]:
                                 cell_pt3.fill = COR_ERRO
-                                mensagens.append("PrecoTabela3 deve ser menor que PrecoTabela2")
+                                cell_pt3.value = ""
+                                mensagens.append("PrecoTabela3 inválido (valor '-' ou zero)")
+                                pt3_val = None
                             else:
-                                cell_pt3.fill = COR_VALIDO
+                                # Converter pontos para vírgulas inteligentemente
+                                converted_value, foi_alterado = convert_price_to_comma_format(valor_str)
+                                if foi_alterado:
+                                    mensagens.append(f"Advertencia: PrecoTabela3 corrigido de '{valor_str}' para '{converted_value}'")
+
+                                cell_pt3.value = converted_value  # Atualiza a célula com formato correto
+                                pt3_val = float(converted_value.replace(",", "."))
+
+                                if not (0.01 <= pt3_val <= 999999.99):
+                                    cell_pt3.fill = COR_ERRO
+                                    mensagens.append("PrecoTabela3 fora do intervalo")
+                                    pt3_val = None
+                                else:
+                                    # Verificar hierarquia
+                                    if (qtde1_preenchida and qtde2_preenchida and qtde3_preenchida) and pt2_val and pt3_val >= pt2_val:
+                                        cell_pt3.fill = COR_ERRO
+                                        mensagens.append("PrecoTabela3 deve ser menor que PrecoTabela2")
+                                    else:
+                                        cell_pt3.fill = COR_VALIDO
                     except:
                         cell_pt3.fill = COR_ERRO
                         mensagens.append("PrecoTabela3 inválido")
@@ -3232,6 +3354,70 @@ class PlanilhaValidator:
                 # 2. Aplicar formatação final
                 self.aplicar_formatacao_final_aba(sheet, nome_aba)
 
+    def alterar_versao_srppwin(self):
+        """
+        Altera a versão do SRPPWIN na célula B2 da aba EMPRESA.
+        A aba está protegida com senha, então desprotege, modifica e reprotege.
+        A coluna C fica desbloqueada para edição.
+        """
+        from openpyxl.styles import Protection
+        from openpyxl.worksheet.protection import SheetProtection
+
+        if "EMPRESA" not in self.wb.sheetnames:
+            return
+
+        # Verificar se a versão foi definida
+        versao = getattr(self, 'versao_srppwin', '19.1.5')
+
+        sheet = self.wb["EMPRESA"]
+        senha = "SINTRICA"
+
+        try:
+            # Remover proteção existente
+            sheet.protection = SheetProtection(sheet=False, password=None)
+
+            # Alterar a célula B2 com a versão escolhida
+            texto_versao = f"QUESTIONÁRIO DE PARAMETRIZAÇÃO SRPPWIN VERSÃO {versao}"
+            sheet["B2"].value = texto_versao
+
+            # Bloquear todas as células por padrão
+            for row in sheet.iter_rows(min_row=1, max_row=sheet.max_row, min_col=1, max_col=sheet.max_column):
+                for cell in row:
+                    cell.protection = Protection(locked=True)
+
+            # Desbloquear a coluna C inteira (para permitir edição)
+            for row in sheet.iter_rows(min_row=1, max_row=sheet.max_row, min_col=3, max_col=3):
+                for cell in row:
+                    cell.protection = Protection(locked=False)
+
+            # Aplicar proteção com senha - configuração completa
+            sheet.protection = SheetProtection(
+                sheet=True,
+                password=senha,
+                objects=True,
+                scenarios=True,
+                formatCells=True,
+                formatColumns=True,
+                formatRows=True,
+                insertColumns=True,
+                insertRows=True,
+                insertHyperlinks=True,
+                deleteColumns=True,
+                deleteRows=True,
+                selectLockedCells=False,
+                sort=True,
+                autoFilter=True,
+                pivotTables=True,
+                selectUnlockedCells=False
+            )
+
+        except Exception as e:
+            # Se falhar, tenta apenas modificar sem mexer na proteção
+            try:
+                sheet["B2"].value = f"QUESTIONÁRIO DE PARAMETRIZAÇÃO SRPPWIN VERSÃO {versao}"
+            except:
+                pass  # Ignora se não conseguir modificar
+
     def _timing(self, nome, funcao, *args, **kwargs):
         """Executa função e registra tempo se em modo dev."""
         import time
@@ -3282,6 +3468,10 @@ class PlanilhaValidator:
         # Finalização: aplicar formatação final e colinha em todas as abas (exceto EMPRESA)
         self._reportar_progresso(90, "Aplicando formatação final...")
         self._timing("finalizar_todas_abas", self.finalizar_todas_abas)
+
+        # Alterar versão SRPPWIN na aba EMPRESA (se definida)
+        self._reportar_progresso(91, "Atualizando versão SRPPWIN...")
+        self._timing("alterar_versao_srppwin", self.alterar_versao_srppwin)
 
         self._reportar_progresso(92, "Determinando status...")
 
