@@ -602,6 +602,16 @@ class PlanilhaValidator:
             for idx in sorted(indices_duplicados, reverse=True):
                 sheet.delete_cols(idx + 1)
 
+            # Remover coluna "CodProdutoRepetido" se existir
+            header = self.get_header_map(sheet)
+            indices_codprodutorepetido = [
+                idx
+                for key, idx in header.items()
+                if key.strip().lower() == "codprodutorepetido"
+            ]
+            for idx in sorted(indices_codprodutorepetido, reverse=True):
+                sheet.delete_cols(idx + 1)
+
             # Remover coluna "Status da Linha" (exceto em modo dev)
             if not self.dev_mode:
                 header = self.get_header_map(sheet)
@@ -1869,6 +1879,15 @@ class PlanilhaValidator:
         # Excluir linhas completamente duplicadas (todas as colunas iguais)
         self.excluir_linhas_duplicadas_clientes(sheet, header)
 
+        # Excluir linhas totalmente vazias
+        linhas_para_excluir = []
+        for row_num in range(sheet.max_row, 1, -1):  # De baixo para cima, ignorando cabeçalho
+            row_values = [sheet.cell(row=row_num, column=col).value for col in range(1, sheet.max_column + 1)]
+            if all(v is None or str(v).strip() == "" for v in row_values):
+                linhas_para_excluir.append(row_num)
+        for row_num in linhas_para_excluir:
+            sheet.delete_rows(row_num)
+
         # Se houver correções, monta a mensagem informando apenas os cabeçalhos que foram alterados
         header_warning = ""
         if corrections:
@@ -1938,11 +1957,29 @@ class PlanilhaValidator:
                 mensagens.append("NomeFantasia ausente")
             else:
                 nf = self.get_valor_string(cell_nf)
-                if not nf or len(nf) > 20:
-                    cell_nf.fill = COR_ADVERTENCIA
-                    mensagens.append("Advertencia, NomeFantasia excede 20 carcteres")
-                else:
-                    cell_nf.fill = COR_VALIDO
+                # Se NomeFantasia estiver vazio, copiar de RazaoSocial
+                if not nf:
+                    idx_rs = header.get("RazaoSocial")
+                    if idx_rs is not None:
+                        cell_rs = row[idx_rs]
+                        rs_val = self.get_valor_string(cell_rs)
+                        if rs_val:
+                            cell_nf.value = rs_val
+                            nf = rs_val
+                        else:
+                            cell_nf.fill = COR_ERRO
+                            mensagens.append("NomeFantasia vazio e RazaoSocial também vazia")
+                    else:
+                        cell_nf.fill = COR_ERRO
+                        mensagens.append("NomeFantasia vazio e coluna RazaoSocial não encontrada")
+
+                # Validar tamanho após possível cópia
+                if nf:
+                    if len(nf) > 20:
+                        cell_nf.fill = COR_ADVERTENCIA
+                        mensagens.append("Advertencia, NomeFantasia excede 20 caracteres")
+                    else:
+                        cell_nf.fill = COR_VALIDO
             idx = header.get("CodRepresentante")
             if idx is not None:
                 cell_cr = row[idx]
@@ -2241,6 +2278,15 @@ class PlanilhaValidator:
         # Excluir linhas duplicadas (linhas idênticas)
         self.excluir_linhas_duplicadas_produtos(sheet, header)
 
+        # Excluir linhas totalmente vazias
+        linhas_para_excluir = []
+        for row_num in range(sheet.max_row, 1, -1):  # De baixo para cima, ignorando cabeçalho
+            row_values = [sheet.cell(row=row_num, column=col).value for col in range(1, sheet.max_column + 1)]
+            if all(v is None or str(v).strip() == "" for v in row_values):
+                linhas_para_excluir.append(row_num)
+        for row_num in linhas_para_excluir:
+            sheet.delete_rows(row_num)
+
         # PASSADA 1: Contagem de duplicados + limpeza de zeros (OTIMIZADO)
         seen_codproduto = {}
         seen_codaux = {}
@@ -2307,6 +2353,10 @@ class PlanilhaValidator:
         linhas_erros = 0
         linhas_advertencias = 0
         seen_produto = {}
+
+        # Rastrear primeira ocorrência de duplicados (primeira = amarelo, demais = vermelho)
+        first_seen_codproduto = {}
+        first_seen_codaux = {}
 
         # OTIMIZAÇÃO: Pré-calcular índices fora do loop (evita 79k lookups)
         idx_codproduto = header.get("CodProduto")
@@ -2384,8 +2434,14 @@ class PlanilhaValidator:
                     else:
                         cell_cp.fill = COR_VALIDO
                 if cp_val and seen_codproduto.get(cp_val, 0) > 1:
-                    mensagens.append("CodProduto duplicado")
                     dup_valores.append(cp_val)
+                    if cp_val not in first_seen_codproduto:
+                        # Primeira ocorrência: advertência (amarelo)
+                        first_seen_codproduto[cp_val] = True
+                        mensagens.append("Advertencia, CodProduto duplicado")
+                    else:
+                        # Demais ocorrências: erro (vermelho)
+                        mensagens.append("CodProduto duplicado")
 
             # Validar CodAuxiliarProduto (usando índice direto)
             if idx_codaux is not None:
@@ -2412,8 +2468,14 @@ class PlanilhaValidator:
                         else:
                             aux_cell.fill = COR_VALIDO
                     if seen_codaux.get(aux_val, 0) > 1:
-                        mensagens.append("CodAuxiliarProduto duplicado")
                         dup_valores.append(aux_val)
+                        if aux_val not in first_seen_codaux:
+                            # Primeira ocorrência: advertência (amarelo)
+                            first_seen_codaux[aux_val] = True
+                            mensagens.append("Advertencia, CodAuxiliarProduto duplicado")
+                        else:
+                            # Demais ocorrências: erro (vermelho)
+                            mensagens.append("CodAuxiliarProduto duplicado")
                 else:
                     aux_cell.fill = COR_VALIDO
 
