@@ -13,7 +13,7 @@ import tempfile
 import subprocess
 
 # Versao do aplicativo
-APP_VERSION = "1.0.15"
+APP_VERSION = "1.0.18"
 VERSION_URL = "https://gist.githubusercontent.com/SINT-Developer/a38baad856a6149526948d7c0c360ab9/raw/version.json"
 
 # Importar o validador
@@ -245,6 +245,14 @@ class ValidadorApp:
         )
         checkbox_novo_arquivo.pack(anchor=tk.W)
 
+        self.gerar_etiquetas = tk.BooleanVar(value=True)
+        checkbox_etiquetas = ttk.Checkbutton(
+            options_frame,
+            text="Gerar planilha de etiquetas (se houver QtdeEtiquetas > 0)",
+            variable=self.gerar_etiquetas
+        )
+        checkbox_etiquetas.pack(anchor=tk.W)
+
         # Frame para versão SRPPWIN
         versao_frame = ttk.Frame(main_frame)
         versao_frame.pack(fill=tk.X, pady=5)
@@ -360,7 +368,8 @@ class ValidadorApp:
             tempo_total = time.perf_counter() - t0
 
             # Verificar se deve gerar planilha de etiquetas
-            etiquetas_result = validator.gerar_planilha_etiquetas()
+            gerar_etiq = self.gerar_etiquetas.get()
+            etiquetas_result = validator.gerar_planilha_etiquetas() if gerar_etiq else None
 
             # Determinar onde salvar com base na opção do usuário
             criar_novo = self.criar_novo_arquivo.get()

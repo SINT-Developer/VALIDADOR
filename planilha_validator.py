@@ -839,6 +839,56 @@ class PlanilhaValidator:
         for r in sorted(rows_to_delete, reverse=True):
             sheet.delete_rows(r)
 
+    def excluir_linhas_vazias_no_meio(self, sheet, lookahead=10):
+        """
+        Remove linhas vazias que estão NO MEIO dos dados.
+        Se encontrar uma linha vazia, verifica as próximas 'lookahead' linhas.
+        Se houver dados nessas linhas, deleta a vazia. Se não, para (fim dos dados).
+        Isso evita deletar milhares de linhas vazias no final da planilha.
+        """
+        linhas_para_deletar = []
+        max_row = sheet.max_row
+        max_col = sheet.max_column
+
+        row_num = 2  # Começa na linha 2 (após cabeçalho)
+        while row_num <= max_row:
+            # Verificar se a linha atual está vazia
+            linha_vazia = True
+            for col in range(1, max_col + 1):
+                val = sheet.cell(row=row_num, column=col).value
+                if val is not None and str(val).strip() != "":
+                    linha_vazia = False
+                    break
+
+            if linha_vazia:
+                # Verificar as próximas 'lookahead' linhas
+                tem_dados_adiante = False
+                for look in range(1, lookahead + 1):
+                    if row_num + look > max_row:
+                        break
+                    for col in range(1, max_col + 1):
+                        val = sheet.cell(row=row_num + look, column=col).value
+                        if val is not None and str(val).strip() != "":
+                            tem_dados_adiante = True
+                            break
+                    if tem_dados_adiante:
+                        break
+
+                if tem_dados_adiante:
+                    # Há dados adiante, então esta linha vazia está no meio - deletar
+                    linhas_para_deletar.append(row_num)
+                else:
+                    # Não há dados nas próximas linhas - chegamos ao fim dos dados
+                    break
+
+            row_num += 1
+
+        # Deletar em ordem reversa
+        for r in reversed(linhas_para_deletar):
+            sheet.delete_rows(r)
+
+        return len(linhas_para_deletar)
+
     def excluir_linhas_duplicadas_clientes(self, sheet, header):
         """
         Remove linhas completamente idênticas na aba CLIENTES.
@@ -1879,14 +1929,8 @@ class PlanilhaValidator:
         # Excluir linhas completamente duplicadas (todas as colunas iguais)
         self.excluir_linhas_duplicadas_clientes(sheet, header)
 
-        # Excluir linhas totalmente vazias
-        linhas_para_excluir = []
-        for row_num in range(sheet.max_row, 1, -1):  # De baixo para cima, ignorando cabeçalho
-            row_values = [sheet.cell(row=row_num, column=col).value for col in range(1, sheet.max_column + 1)]
-            if all(v is None or str(v).strip() == "" for v in row_values):
-                linhas_para_excluir.append(row_num)
-        for row_num in linhas_para_excluir:
-            sheet.delete_rows(row_num)
+        # Excluir linhas vazias no meio dos dados (verifica 10 linhas à frente)
+        self.excluir_linhas_vazias_no_meio(sheet, lookahead=10)
 
         # Se houver correções, monta a mensagem informando apenas os cabeçalhos que foram alterados
         header_warning = ""
@@ -2278,14 +2322,8 @@ class PlanilhaValidator:
         # Excluir linhas duplicadas (linhas idênticas)
         self.excluir_linhas_duplicadas_produtos(sheet, header)
 
-        # Excluir linhas totalmente vazias
-        linhas_para_excluir = []
-        for row_num in range(sheet.max_row, 1, -1):  # De baixo para cima, ignorando cabeçalho
-            row_values = [sheet.cell(row=row_num, column=col).value for col in range(1, sheet.max_column + 1)]
-            if all(v is None or str(v).strip() == "" for v in row_values):
-                linhas_para_excluir.append(row_num)
-        for row_num in linhas_para_excluir:
-            sheet.delete_rows(row_num)
+        # Excluir linhas vazias no meio dos dados (verifica 10 linhas à frente)
+        self.excluir_linhas_vazias_no_meio(sheet, lookahead=10)
 
         # PASSADA 1: Contagem de duplicados + limpeza de zeros (OTIMIZADO)
         seen_codproduto = {}
@@ -2417,22 +2455,29 @@ class PlanilhaValidator:
             else:
                 cell_cp = row[idx_codproduto]
                 cp_val = get_val(cell_cp)
-                if emp_cod_tipo == "N":
+                if not cp_val:
+                    cell_cp.fill = COR_ERRO
+                    mensagens.append("CodProduto vazio")
+                elif emp_cod_tipo == "N":
                     if not cp_val.isdigit():
                         cell_cp.fill = COR_ERRO
                         mensagens.append(f"CodProduto '{cp_val}' é alfanumérico, mas a empresa está configurada para código numérico")
-                    elif len(cp_val) > emp_cod_tamanho:
+                    elif emp_cod_tamanho and len(cp_val) > emp_cod_tamanho:
                         cell_cp.fill = COR_ERRO
                         mensagens.append(f"CodProduto excede tamanho permitido ({len(cp_val)} > {emp_cod_tamanho})")
                     else:
                         cell_cp.fill = COR_VALIDO
                 elif emp_cod_tipo == "A":
                     # Alfanumérico aceita letras e/ou números (não precisa ter ambos)
-                    if len(cp_val) > emp_cod_tamanho:
+                    if emp_cod_tamanho and len(cp_val) > emp_cod_tamanho:
                         cell_cp.fill = COR_ERRO
                         mensagens.append(f"CodProduto excede tamanho permitido ({len(cp_val)} > {emp_cod_tamanho})")
                     else:
                         cell_cp.fill = COR_VALIDO
+                else:
+                    # emp_cod_tipo não configurado na EMPRESA - validação básica
+                    cell_cp.fill = COR_ADVERTENCIA
+                    mensagens.append("Advertencia, tipo de código não configurado na aba EMPRESA")
                 if cp_val and seen_codproduto.get(cp_val, 0) > 1:
                     dup_valores.append(cp_val)
                     if cp_val not in first_seen_codproduto:
@@ -2467,6 +2512,10 @@ class PlanilhaValidator:
                             mensagens.append(f"CodAuxiliarProduto excede tamanho permitido ({len(aux_val)} > {emp_cod_aux_tamanho})")
                         else:
                             aux_cell.fill = COR_VALIDO
+                    else:
+                        # emp_cod_aux não configurado na EMPRESA - validação básica
+                        aux_cell.fill = COR_ADVERTENCIA
+                        mensagens.append("Advertencia, tipo de código auxiliar não configurado na aba EMPRESA")
                     if seen_codaux.get(aux_val, 0) > 1:
                         dup_valores.append(aux_val)
                         if aux_val not in first_seen_codaux:
@@ -3119,19 +3168,23 @@ class PlanilhaValidator:
         A coluna 'Produto' original é substituída por 'Produto - Linha 1' e 'Produto - Linha 2',
         dividindo o texto sem cortar palavras (máximo 23 caracteres por linha).
         Todas as células são formatadas como texto, com fonte Arial 10; o cabeçalho é negrito,
-        centralizado e com fundo amarelo (#FFFF00); os dados são alinhados à esquerda.
-        Retorna o caminho do arquivo gerado ou None se não houver etiquetas.
+        centralizado e com fundo amarelo; os dados são alinhados à esquerda.
+        Usa xlwt para gerar formato .xls real (Excel 97-2003) compatível com Zebra Design.
+        Retorna (BytesIO, nome_arquivo) ou None se não houver etiquetas.
         """
         try:
-            from openpyxl import Workbook
-            from openpyxl.styles import Font, Alignment, PatternFill
-            import os
+            import xlwt
+            from io import BytesIO
             from datetime import datetime
+
+            print("[ETIQUETAS] Iniciando geração...")
 
             # Tenta obter a aba 'PRODUTOS'
             try:
                 produtos_sheet = self.wb["PRODUTOS"]
+                print("[ETIQUETAS] Aba PRODUTOS encontrada")
             except KeyError:
+                print("[ETIQUETAS] Aba PRODUTOS não encontrada!")
                 return None
 
             # Define o cabeçalho fixo para a planilha de etiquetas
@@ -3171,17 +3224,20 @@ class PlanilhaValidator:
                 "QtdeEtiquetas"
             ]
             header_map = {col: idx for idx, col in enumerate(header)}
+            print(f"[ETIQUETAS] Cabeçalhos encontrados: {list(header_map.keys())}")
             for field in required_fields:
                 if field not in header_map:
+                    print(f"[ETIQUETAS] Campo obrigatório não encontrado: {field}")
                     return None
 
             idx_qtde = header_map["QtdeEtiquetas"]
             idx_produto = header_map["Produto"]
+            print(f"[ETIQUETAS] idx_qtde={idx_qtde}, idx_produto={idx_produto}")
 
             # Filtrar linhas com QtdeEtiquetas > 0
             linhas_etiquetas = []
             for row in produtos_sheet.iter_rows(min_row=2, values_only=True):
-                qtde = row[idx_qtde]
+                qtde = row[idx_qtde] if idx_qtde < len(row) else None
                 if qtde is None or str(qtde).strip() == "":
                     continue
                 try:
@@ -3191,93 +3247,99 @@ class PlanilhaValidator:
                 if qtde_val > 0:
                     linhas_etiquetas.append(row)
 
+            print(f"[ETIQUETAS] Linhas com QtdeEtiquetas > 0: {len(linhas_etiquetas)}")
             if not linhas_etiquetas:
+                print("[ETIQUETAS] Nenhuma linha com etiquetas encontrada")
                 return None
 
-            wb_etiquetas = Workbook()
-            sheet_etiquetas = wb_etiquetas.active
-            sheet_etiquetas.title = "Etiquetas"
+            # Criar workbook xlwt (formato .xls real)
+            wb_etiquetas = xlwt.Workbook(encoding='utf-8')
+            sheet_etiquetas = wb_etiquetas.add_sheet('Etiquetas')
 
-            # Adiciona o cabeçalho fixo
-            sheet_etiquetas.append(final_header)
+            # Estilos para xlwt
+            # Estilo do cabeçalho: Arial 10, negrito, centralizado, fundo amarelo
+            style_header = xlwt.XFStyle()
+            font_header = xlwt.Font()
+            font_header.name = 'Arial'
+            font_header.height = 200  # 10 pontos * 20
+            font_header.bold = True
+            style_header.font = font_header
+            align_header = xlwt.Alignment()
+            align_header.horz = xlwt.Alignment.HORZ_CENTER
+            align_header.vert = xlwt.Alignment.VERT_CENTER
+            style_header.alignment = align_header
+            pattern_header = xlwt.Pattern()
+            pattern_header.pattern = xlwt.Pattern.SOLID_PATTERN
+            pattern_header.pattern_fore_colour = xlwt.Style.colour_map['yellow']
+            style_header.pattern = pattern_header
 
-            # Processa cada linha filtrada e monta a nova linha com as colunas adequadas
+            # Estilo dos dados: Arial 10, alinhado à esquerda
+            style_data = xlwt.XFStyle()
+            font_data = xlwt.Font()
+            font_data.name = 'Arial'
+            font_data.height = 200  # 10 pontos * 20
+            style_data.font = font_data
+            align_data = xlwt.Alignment()
+            align_data.horz = xlwt.Alignment.HORZ_LEFT
+            align_data.vert = xlwt.Alignment.VERT_CENTER
+            style_data.alignment = align_data
+
+            # Rastrear largura máxima de cada coluna
+            col_widths = [0] * len(final_header)
+
+            # Escrever cabeçalho (linha 0)
+            for col_idx, col_name in enumerate(final_header):
+                sheet_etiquetas.write(0, col_idx, col_name, style_header)
+                col_widths[col_idx] = max(col_widths[col_idx], len(col_name))
+
+            # Processa cada linha filtrada e escreve na planilha
+            row_num = 1
             for row in linhas_etiquetas:
-                nova_linha = []
-                for col in final_header:
+                for col_idx, col in enumerate(final_header):
                     if col in ["Produto - Linha 1", "Produto - Linha 2"]:
                         # Obtém o valor original da coluna 'Produto'
                         produto_val = row[idx_produto]
                         produto_str = str(produto_val) if produto_val is not None else ""
-                        # Usa a função split_text para dividir o texto (verifica se self.split_text existe)
+                        # Usa a função split_text para dividir o texto
                         if hasattr(self, "split_text"):
                             linha1, linha2 = self.split_text(produto_str, 23)
                         else:
                             linha1, linha2 = split_text(produto_str, 23)
-                        nova_linha.append(linha1 if col == "Produto - Linha 1" else linha2)
+                        valor = linha1 if col == "Produto - Linha 1" else linha2
                     else:
                         # Copia o valor da coluna correspondente, se existir
                         if col in header_map:
-                            nova_linha.append(row[header_map[col]])
+                            valor = row[header_map[col]]
+                            valor = str(valor) if valor is not None else ""
                         else:
-                            nova_linha.append("")
-                sheet_etiquetas.append(nova_linha)
+                            valor = ""
 
-            # Formatação: Cabeçalho: Arial 10, negrito, centralizado, fundo amarelo (#FFFF00);
-            # dados: Arial 10, alinhados à esquerda
-            from openpyxl.utils import get_column_letter
+                    sheet_etiquetas.write(row_num, col_idx, valor, style_data)
+                    col_widths[col_idx] = max(col_widths[col_idx], len(str(valor)))
+                row_num += 1
 
-            font_header = Font(name="Arial", size=10, bold=True)
-            font_data = Font(name="Arial", size=10, bold=False)
-            align_header = Alignment(horizontal="center", vertical="center")
-            align_data = Alignment(horizontal="left", vertical="center")
-            header_fill = PatternFill(start_color="FFFF00", end_color="FFFF00", fill_type="solid")
-
-            # Formatar cabeçalho (linha 1)
-            for cell in sheet_etiquetas[1]:
-                cell.font = font_header
-                cell.alignment = align_header
-                cell.fill = header_fill
-                cell.number_format = "@"  # formato texto
-
-            # Formatar os dados (a partir da linha 2)
-            for row in sheet_etiquetas.iter_rows(min_row=2):
-                for cell in row:
-                    cell.font = font_data
-                    cell.alignment = align_data
-                    cell.number_format = "@"  # forçar como texto
-
-            # Ajustar a largura de cada coluna com base no maior conteúdo
-            for col in sheet_etiquetas.columns:
-                max_length = 0
-                column = col[0].column_letter
-                for cell in col:
-                    if cell.value is not None:
-                        try:
-                            length = len(str(cell.value))
-                            if length > max_length:
-                                max_length = length
-                        except Exception:
-                            pass
-                sheet_etiquetas.column_dimensions[column].width = max_length + 2
+            # Ajustar largura das colunas (xlwt usa unidades de 1/256 de caractere)
+            for col_idx, width in enumerate(col_widths):
+                sheet_etiquetas.col(col_idx).width = (width + 2) * 256
 
             # Define o nome do arquivo de etiquetas usando self.emp_nome e timestamp
             nome_base = self.emp_nome if self.emp_nome and self.emp_nome.strip() else "erro"
-            timestamp = datetime.now().strftime("%Y.%m.%d %H-%M")  # novo formato: Ano.Mês.Dia Hora-Minuto
+            timestamp = datetime.now().strftime("%Y.%m.%d %H-%M")
             nome_arquivo = f"{timestamp}_{nome_base}_ETIQUETAS.xls"
-            
-            # Salva o workbook em um buffer de memória em vez de um arquivo físico
-            from io import BytesIO
+
+            # Salva o workbook em um buffer de memória
             etiquetas_data = BytesIO()
             wb_etiquetas.save(etiquetas_data)
-            etiquetas_data.seek(0)  # Retorna o ponteiro para o início do buffer
-            
+            etiquetas_data.seek(0)
+
             # Retorna o objeto BytesIO e o nome do arquivo
+            print(f"[ETIQUETAS] Planilha gerada com sucesso: {nome_arquivo}")
             return etiquetas_data, nome_arquivo
 
-
         except Exception as e:
-            print(f"Erro ao gerar planilha de etiquetas: {e}")
+            import traceback
+            print(f"[ETIQUETAS] Erro ao gerar planilha: {e}")
+            traceback.print_exc()
             return None
 
     
