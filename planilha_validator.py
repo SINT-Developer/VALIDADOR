@@ -780,6 +780,8 @@ class PlanilhaValidator:
             or "ausente" in m.lower()
             or "inexistente" in m.lower()
             or "vazio" in m.lower()
+            or "excede" in m.lower()
+            or "não permitido" in m.lower()
             for m in mensagens
         ):
             return COR_ERRO
@@ -2046,6 +2048,24 @@ class PlanilhaValidator:
                     mensagens.append("RazaoSocial excede 40 caracteres")
                 else:
                     cell_rs.fill = COR_VALIDO
+            idx = header.get("IERG")
+            if idx is not None:
+                cell_ierg = row[idx]
+                ierg_val = self.get_valor_string(cell_ierg)
+                if ierg_val:
+                    import re
+                    tem_caractere_especial = bool(re.search(r'[^a-zA-Z0-9]', ierg_val))
+                    if tem_caractere_especial:
+                        cell_ierg.fill = COR_ERRO
+                        mensagens.append("IERG contém caracteres especiais (pontos, vírgulas, espaços, etc.)")
+                    elif ierg_val.upper() == "ISENTO":
+                        cell_ierg.fill = COR_VALIDO
+                    elif ierg_val.isdigit():
+                        cell_ierg.fill = COR_VALIDO
+                    else:
+                        cell_ierg.fill = COR_ERRO
+                        mensagens.append("IERG em formato inválido (deve ser numérico ou ISENTO)")
+
             idx = header.get("PrecoTabela")
             if idx is not None:
                 cell_pt = row[idx]
@@ -2410,6 +2430,7 @@ class PlanilhaValidator:
         emp_cod_tamanho = self.emp_cod_tamanho
         emp_cod_aux = self.emp_cod_aux
         emp_cod_aux_tamanho = self.emp_cod_aux_tamanho
+        print(f"[PRODUTOS] emp_cod_tipo={emp_cod_tipo}, emp_cod_tamanho={emp_cod_tamanho}, emp_cod_aux={emp_cod_aux}, emp_cod_aux_tamanho={emp_cod_aux_tamanho}")
         filial_cod_list = self.filial_cod_list
         filial_unica = len(filial_cod_list) == 1
         filial_valor_unico = filial_cod_list[0] if filial_unica else None

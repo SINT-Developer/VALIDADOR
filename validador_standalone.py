@@ -225,7 +225,7 @@ class ValidadorApp:
         file_label = ttk.Label(file_frame, text="Planilha:")
         file_label.pack(side=tk.LEFT)
 
-        file_entry = ttk.Entry(file_frame, textvariable=self.file_path, width=50)
+        file_entry = ttk.Entry(file_frame, textvariable=self.file_path, width=50, state="readonly")
         file_entry.pack(side=tk.LEFT, padx=5, fill=tk.X, expand=True)
 
         browse_button = ttk.Button(
