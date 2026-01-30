@@ -329,9 +329,6 @@ class PlanilhaValidator:
         self.progress_callback = progress_callback
         self.dev_mode = dev_mode
 
-        # Carregar workbook original (preservado)
-        self.wb_original = load_workbook(arquivo)
-        
         # Carregar workbook apenas com valores para validação
         try:
             self.wb = load_workbook(arquivo, data_only=True)
