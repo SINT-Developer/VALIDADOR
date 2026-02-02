@@ -3355,7 +3355,7 @@ class PlanilhaValidator:
             import traceback
             print(f"[ETIQUETAS] Erro ao gerar planilha: {e}")
             traceback.print_exc()
-            return None
+            raise
 
     
     #def salvar_planilha(self, novo_arquivo=None):

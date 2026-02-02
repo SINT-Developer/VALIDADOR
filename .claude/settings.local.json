@@ -7,7 +7,9 @@
       "Bash(where:*)",
       "Bash(dir /b \"c:\\\\Users\\\\erick.SINTDB\\\\Desktop\\\\Projetos_cursor\\\\NOVO-VALIDADOR\\\\refatorado\")",
       "Bash(pip install:*)",
-      "Bash(.venvScriptspip install xlwt)"
+      "Bash(.venvScriptspip install xlwt)",
+      "Bash(claude mcp add:*)",
+      "mcp__sqlserver__test_connection"
     ],
     "deny": [],
     "ask": []

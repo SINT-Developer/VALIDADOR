@@ -13,7 +13,7 @@ import tempfile
 import subprocess
 
 # Versao do aplicativo
-APP_VERSION = "1.0.20"
+APP_VERSION = "1.0.21"
 VERSION_URL = "https://gist.githubusercontent.com/SINT-Developer/a38baad856a6149526948d7c0c360ab9/raw/version.json"
 
 # Importar o validador
@@ -369,7 +369,13 @@ class ValidadorApp:
 
             # Verificar se deve gerar planilha de etiquetas
             gerar_etiq = self.gerar_etiquetas.get()
-            etiquetas_result = validator.gerar_planilha_etiquetas() if gerar_etiq else None
+            etiquetas_result = None
+            etiquetas_erro = None
+            if gerar_etiq:
+                try:
+                    etiquetas_result = validator.gerar_planilha_etiquetas()
+                except Exception as e:
+                    etiquetas_erro = str(e)
 
             # Determinar onde salvar com base na opção do usuário
             criar_novo = self.criar_novo_arquivo.get()
@@ -413,6 +419,10 @@ class ValidadorApp:
 
             if etiquetas_path:
                 message += f"\n\nArquivo de etiquetas salvo em:\n{etiquetas_path}"
+            elif gerar_etiq and etiquetas_erro:
+                message += f"\n\nERRO ao gerar planilha de etiquetas:\n{etiquetas_erro}"
+            elif gerar_etiq and etiquetas_result is None:
+                message += "\n\nPlanilha de etiquetas NÃO foi gerada: nenhuma linha com QtdeEtiquetas > 0 encontrada."
 
             # Reabilitar interface usando a mesma abordagem recursiva
             def enable_widgets(parent):
