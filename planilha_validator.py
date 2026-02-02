@@ -777,7 +777,6 @@ class PlanilhaValidator:
             or "ausente" in m.lower()
             or "inexistente" in m.lower()
             or "vazio" in m.lower()
-            or "excede" in m.lower()
             or "não permitido" in m.lower()
             for m in mensagens
         ):
@@ -2050,18 +2049,16 @@ class PlanilhaValidator:
                 cell_ierg = row[idx]
                 ierg_val = self.get_valor_string(cell_ierg)
                 if ierg_val:
+                    # Remover caracteres especiais (pontos, vírgulas, espaços, etc.)
                     import re
-                    tem_caractere_especial = bool(re.search(r'[^a-zA-Z0-9]', ierg_val))
-                    if tem_caractere_especial:
-                        cell_ierg.fill = COR_ERRO
-                        mensagens.append("IERG contém caracteres especiais (pontos, vírgulas, espaços, etc.)")
-                    elif ierg_val.upper() == "ISENTO":
-                        cell_ierg.fill = COR_VALIDO
-                    elif ierg_val.isdigit():
-                        cell_ierg.fill = COR_VALIDO
-                    else:
-                        cell_ierg.fill = COR_ERRO
-                        mensagens.append("IERG em formato inválido (deve ser numérico ou ISENTO)")
+                    ierg_limpo = re.sub(r'[^a-zA-Z0-9]', '', ierg_val)
+                    if ierg_limpo != ierg_val:
+                        cell_ierg.value = ierg_limpo
+                        ierg_val = ierg_limpo
+                    # Se for "ISENTA" (qualquer case), autocorrigir para "ISENTO"
+                    if ierg_val.strip().upper() == "ISENTA":
+                        cell_ierg.value = "ISENTO"
+                    cell_ierg.fill = COR_VALIDO
 
             idx = header.get("PrecoTabela")
             if idx is not None:
@@ -2482,14 +2479,14 @@ class PlanilhaValidator:
                         mensagens.append(f"CodProduto '{cp_val}' é alfanumérico, mas a empresa está configurada para código numérico")
                     elif emp_cod_tamanho and len(cp_val) > emp_cod_tamanho:
                         cell_cp.fill = COR_ERRO
-                        mensagens.append(f"CodProduto excede tamanho permitido ({len(cp_val)} > {emp_cod_tamanho})")
+                        mensagens.append(f"CodProduto inválido, excede tamanho permitido ({len(cp_val)} > {emp_cod_tamanho})")
                     else:
                         cell_cp.fill = COR_VALIDO
                 elif emp_cod_tipo == "A":
                     # Alfanumérico aceita letras e/ou números (não precisa ter ambos)
                     if emp_cod_tamanho and len(cp_val) > emp_cod_tamanho:
                         cell_cp.fill = COR_ERRO
-                        mensagens.append(f"CodProduto excede tamanho permitido ({len(cp_val)} > {emp_cod_tamanho})")
+                        mensagens.append(f"CodProduto inválido, excede tamanho permitido ({len(cp_val)} > {emp_cod_tamanho})")
                     else:
                         cell_cp.fill = COR_VALIDO
                 else:
@@ -2520,14 +2517,14 @@ class PlanilhaValidator:
                             mensagens.append(f"CodAuxiliarProduto '{aux_val}' é alfanumérico, mas a empresa está configurada para código numérico")
                         elif emp_cod_aux_tamanho and len(aux_val) > emp_cod_aux_tamanho:
                             aux_cell.fill = COR_ERRO
-                            mensagens.append(f"CodAuxiliarProduto excede tamanho permitido ({len(aux_val)} > {emp_cod_aux_tamanho})")
+                            mensagens.append(f"CodAuxiliarProduto inválido, excede tamanho permitido ({len(aux_val)} > {emp_cod_aux_tamanho})")
                         else:
                             aux_cell.fill = COR_VALIDO
                     elif emp_cod_aux == "A":
                         # Alfanumérico aceita letras e/ou números (não precisa ter ambos)
                         if emp_cod_aux_tamanho and len(aux_val) > emp_cod_aux_tamanho:
                             aux_cell.fill = COR_ERRO
-                            mensagens.append(f"CodAuxiliarProduto excede tamanho permitido ({len(aux_val)} > {emp_cod_aux_tamanho})")
+                            mensagens.append(f"CodAuxiliarProduto inválido, excede tamanho permitido ({len(aux_val)} > {emp_cod_aux_tamanho})")
                         else:
                             aux_cell.fill = COR_VALIDO
                     else:
@@ -3439,9 +3436,9 @@ class PlanilhaValidator:
     def aplicar_formatacao_final_aba(self, sheet, nome_aba):
         """
         Aplica formatação final em uma aba:
-        1. Cabeçalho com fundo preto e letra branca
-        2. Desocultar todas as colunas
-        3. Aplicar bordas em todas as células com dados
+        1. Desocultar todas as colunas
+        2. Cabeçalho com fundo preto e letra branca
+        Nota: Bordas já são aplicadas por aplicar_borda() durante a validação.
         """
         if nome_aba.upper() in ["EMPRESA", "RESULTADO DAS VALIDAÇÕES"]:
             return  # Não formatar essas abas
@@ -3464,16 +3461,6 @@ class PlanilhaValidator:
             if cell.value is not None:
                 cell.fill = ESTILO_CABECALHO_FILL
                 cell.font = ESTILO_CABECALHO_FONT
-
-        # 3. Aplicar bordas em todas as células com dados
-        max_row = sheet.max_row
-        max_col = sheet.max_column
-
-        if max_row > 0 and max_col > 0:
-            for row in sheet.iter_rows(min_row=1, max_row=max_row, min_col=1, max_col=max_col):
-                for cell in row:
-                    if cell.value is not None:
-                        cell.border = BORDA
 
     def finalizar_todas_abas(self):
         """
