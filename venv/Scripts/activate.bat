@@ -8,7 +8,7 @@ if defined _OLD_CODEPAGE (
     "%SystemRoot%\System32\chcp.com" 65001 > nul
 )
 
-set "VIRTUAL_ENV=C:\Users\erick.SINTDB\Desktop\Projetos_cursor\VALIDAR\NOVO-VALIDADOR\venv"
+set "VIRTUAL_ENV=c:\Users\erick.SINTDB\Desktop\Projetos_cursor\NOVO-VALIDADOR\venv"
 
 if not defined PROMPT set PROMPT=$P$G
 

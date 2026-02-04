@@ -9,7 +9,13 @@
       "Bash(pip install:*)",
       "Bash(.venvScriptspip install xlwt)",
       "Bash(claude mcp add:*)",
-      "mcp__sqlserver__test_connection"
+      "mcp__sqlserver__test_connection",
+      "mcp__sqlserver__execute_query",
+      "mcp__sqlserver__describe_table",
+      "Bash(del \"c:\\\\Users\\\\erick.SINTDB\\\\Desktop\\\\Projetos_cursor\\\\NOVO-VALIDADOR\\\\planilha_importator.py\")",
+      "Bash(\"c:\\\\Users\\\\erick.SINTDB\\\\Desktop\\\\Projetos_cursor\\\\NOVO-VALIDADOR\\\\venv\\\\Scripts\\\\pip.exe\" install pyodbc openpyxl)",
+      "mcp__sqlserver__list_databases",
+      "mcp__sqlserver__get_table_stats"
     ],
     "deny": [],
     "ask": []

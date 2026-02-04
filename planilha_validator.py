@@ -3,6 +3,7 @@ from datetime import datetime
 from openpyxl import load_workbook, Workbook
 from openpyxl.styles import PatternFill, Border, Side, Font
 from openpyxl.utils import get_column_letter
+from copy import copy
 import os
 import time
 import os
@@ -802,6 +803,61 @@ class PlanilhaValidator:
                     cell.border = BORDA
         sheet.auto_filter.ref = sheet.dimensions
 
+    @staticmethod
+    def _deletar_linhas_batch(sheet, rows_to_delete):
+        """
+        Remove linhas de uma sheet de forma eficiente.
+        Manipula o dicionário interno de células do openpyxl diretamente,
+        reindexando as linhas em uma única passada — O(células_existentes).
+        """
+        if not rows_to_delete:
+            return
+
+        from bisect import bisect_right
+
+        rows_set = set(rows_to_delete)
+        sorted_dels = sorted(rows_to_delete)
+        num_deleted = len(rows_to_delete)
+
+        # Reindexar células diretamente no dicionário interno
+        new_cells = {}
+        for (r, c), cell in list(sheet._cells.items()):
+            if r in rows_set:
+                continue
+            offset = bisect_right(sorted_dels, r)
+            new_r = r - offset
+            if offset > 0:
+                cell.row = new_r
+            new_cells[(new_r, c)] = cell
+        sheet._cells = new_cells
+
+        # Reindexar row_dimensions (alturas de linhas etc.)
+        new_dims = {}
+        for r, dim in list(sheet.row_dimensions.items()):
+            if r in rows_set:
+                continue
+            offset = bisect_right(sorted_dels, r)
+            new_r = r - offset
+            if offset > 0:
+                dim.index = new_r
+            new_dims[new_r] = dim
+        sheet.row_dimensions.clear()
+        sheet.row_dimensions.update(new_dims)
+
+        # Reindexar merged cells
+        if sheet.merged_cells.ranges:
+            new_merged = []
+            for mcr in list(sheet.merged_cells.ranges):
+                # Se alguma linha do merge foi deletada, desfaz o merge
+                if any(r in rows_set for r in range(mcr.min_row, mcr.max_row + 1)):
+                    continue
+                min_off = bisect_right(sorted_dels, mcr.min_row)
+                max_off = bisect_right(sorted_dels, mcr.max_row)
+                mcr.min_row -= min_off
+                mcr.max_row -= max_off
+                new_merged.append(mcr)
+            sheet.merged_cells.ranges = new_merged
+
     def excluir_linhas_duplicadas_produtos(self, sheet, header):
         ignore_cols = set()
         for key, idx in header.items():
@@ -811,9 +867,15 @@ class PlanilhaValidator:
         # OTIMIZAÇÃO: Verificação rápida de linha vazia usando CodProduto
         idx_codproduto = header.get("CodProduto")
 
+        print(f"  [excluir_duplicadas] Iterando linhas... max_row={sheet.max_row}")
+        t0 = time.perf_counter()
         seen = {}
         rows_to_delete = []
+        linhas_iteradas = 0
         for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
+            linhas_iteradas += 1
+            if linhas_iteradas % 50000 == 0:
+                print(f"  [excluir_duplicadas] ...iterou {linhas_iteradas} linhas ({time.perf_counter() - t0:.1f}s)")
             # Verificação rápida de linha vazia
             if idx_codproduto is not None:
                 first_val = row[idx_codproduto].value
@@ -833,9 +895,14 @@ class PlanilhaValidator:
             else:
                 seen[row_tuple] = row[0].row
 
-        # Deletar em ordem reversa para não afetar índices
-        for r in sorted(rows_to_delete, reverse=True):
-            sheet.delete_rows(r)
+        print(f"  [excluir_duplicadas] Iteracao concluida: {linhas_iteradas} linhas iteradas, {len(seen)} unicas, {len(rows_to_delete)} duplicadas ({time.perf_counter() - t0:.1f}s)")
+
+        # Deletar em batch (compactação)
+        if rows_to_delete:
+            print(f"  [excluir_duplicadas] Removendo {len(rows_to_delete)} linhas duplicadas (batch)...")
+            t_del = time.perf_counter()
+            self._deletar_linhas_batch(sheet, rows_to_delete)
+            print(f"  [excluir_duplicadas] Remocao concluida em {time.perf_counter() - t_del:.1f}s")
 
     def excluir_linhas_vazias_no_meio(self, sheet, lookahead=10):
         """
@@ -847,6 +914,8 @@ class PlanilhaValidator:
         linhas_para_deletar = []
         max_row = sheet.max_row
         max_col = sheet.max_column
+        print(f"  [excluir_vazias] max_row={max_row}, max_col={max_col}")
+        t0 = time.perf_counter()
 
         row_num = 2  # Começa na linha 2 (após cabeçalho)
         while row_num <= max_row:
@@ -881,9 +950,14 @@ class PlanilhaValidator:
 
             row_num += 1
 
-        # Deletar em ordem reversa
-        for r in reversed(linhas_para_deletar):
-            sheet.delete_rows(r)
+        print(f"  [excluir_vazias] Varredura concluida na linha {row_num}, encontrou {len(linhas_para_deletar)} vazias no meio ({time.perf_counter() - t0:.1f}s)")
+
+        # Deletar em batch (compactação)
+        if linhas_para_deletar:
+            print(f"  [excluir_vazias] Removendo {len(linhas_para_deletar)} linhas (batch)...")
+            t_del = time.perf_counter()
+            self._deletar_linhas_batch(sheet, linhas_para_deletar)
+            print(f"  [excluir_vazias] Remocao concluida em {time.perf_counter() - t_del:.1f}s")
 
         return len(linhas_para_deletar)
 
@@ -922,9 +996,9 @@ class PlanilhaValidator:
             else:
                 seen[row_tuple] = row[0].row
 
-        # Deletar em ordem reversa para não afetar índices
-        for r in sorted(rows_to_delete, reverse=True):
-            sheet.delete_rows(r)
+        # Deletar em batch (compactação)
+        if rows_to_delete:
+            self._deletar_linhas_batch(sheet, rows_to_delete)
 
     @staticmethod
     def corrigir_cabecalho(sheet, expected):
@@ -1914,6 +1988,46 @@ class PlanilhaValidator:
 
         # Ao final do método validar_XXX, depois de aplicar bordas e ajustar colunas:
 
+    @staticmethod
+    def _validar_cpf(digitos):
+        """Valida CPF pelos dígitos verificadores. Recebe string com 11 dígitos."""
+        if len(digitos) != 11:
+            return False
+        if digitos == digitos[0] * 11:
+            return False
+        soma = sum(int(digitos[i]) * (10 - i) for i in range(9))
+        resto = soma % 11
+        d1 = 0 if resto < 2 else 11 - resto
+        if int(digitos[9]) != d1:
+            return False
+        soma = sum(int(digitos[i]) * (11 - i) for i in range(10))
+        resto = soma % 11
+        d2 = 0 if resto < 2 else 11 - resto
+        if int(digitos[10]) != d2:
+            return False
+        return True
+
+    @staticmethod
+    def _validar_cnpj(digitos):
+        """Valida CNPJ pelos dígitos verificadores. Recebe string com 14 dígitos."""
+        if len(digitos) != 14:
+            return False
+        if digitos == digitos[0] * 14:
+            return False
+        pesos1 = [5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]
+        soma = sum(int(digitos[i]) * pesos1[i] for i in range(12))
+        resto = soma % 11
+        d1 = 0 if resto < 2 else 11 - resto
+        if int(digitos[12]) != d1:
+            return False
+        pesos2 = [6, 5, 4, 3, 2, 9, 8, 7, 6, 5, 4, 3, 2]
+        soma = sum(int(digitos[i]) * pesos2[i] for i in range(13))
+        resto = soma % 11
+        d2 = 0 if resto < 2 else 11 - resto
+        if int(digitos[13]) != d2:
+            return False
+        return True
+
     def validar_CLIENTES(self):
         if "CLIENTES" not in self.wb.sheetnames:
             return
@@ -2044,6 +2158,31 @@ class PlanilhaValidator:
                     mensagens.append("RazaoSocial excede 40 caracteres")
                 else:
                     cell_rs.fill = COR_VALIDO
+            # Validar CNPJCPF
+            idx_cnpjcpf = header.get("CNPJCPF")
+            if idx_cnpjcpf is not None:
+                cell_doc = row[idx_cnpjcpf]
+                doc_raw = self.get_valor_string(cell_doc)
+                if doc_raw:
+                    import re
+                    doc_digitos = re.sub(r'\D', '', doc_raw)
+                    if len(doc_digitos) == 11:
+                        if not self._validar_cpf(doc_digitos):
+                            cell_doc.fill = COR_ERRO
+                            mensagens.append("CNPJCPF inválido (CPF com dígito verificador incorreto)")
+                        else:
+                            cell_doc.fill = COR_VALIDO
+                    elif len(doc_digitos) == 14:
+                        if not self._validar_cnpj(doc_digitos):
+                            cell_doc.fill = COR_ERRO
+                            mensagens.append("CNPJCPF inválido (CNPJ com dígito verificador incorreto)")
+                        else:
+                            cell_doc.fill = COR_VALIDO
+                    else:
+                        cell_doc.fill = COR_ERRO
+                        mensagens.append(f"CNPJCPF inválido ({len(doc_digitos)} dígitos - esperado 11 para CPF ou 14 para CNPJ)")
+                else:
+                    cell_doc.fill = COR_VALIDO
             idx = header.get("IERG")
             if idx is not None:
                 cell_ierg = row[idx]
@@ -2329,17 +2468,26 @@ class PlanilhaValidator:
             return "Erro", "A aba PRODUTOS não foi encontrada!"
 
         sheet = self.wb["PRODUTOS"]
+        print(f"[PRODUTOS] sheet.max_row={sheet.max_row}, sheet.max_column={sheet.max_column}")
         # Obtém o header atual da planilha, sem forçar uma ordem específica
         header = self.get_header_map(sheet)
         header_warning = ""
 
         # Excluir linhas duplicadas (linhas idênticas)
+        print(f"[PRODUTOS] Iniciando excluir_linhas_duplicadas_produtos...")
+        t_dup = time.perf_counter()
         self.excluir_linhas_duplicadas_produtos(sheet, header)
+        print(f"[PRODUTOS] excluir_linhas_duplicadas_produtos concluido em {time.perf_counter() - t_dup:.2f}s (max_row agora={sheet.max_row})")
 
         # Excluir linhas vazias no meio dos dados (verifica 10 linhas à frente)
+        print(f"[PRODUTOS] Iniciando excluir_linhas_vazias_no_meio...")
+        t_vaz = time.perf_counter()
         self.excluir_linhas_vazias_no_meio(sheet, lookahead=10)
+        print(f"[PRODUTOS] excluir_linhas_vazias_no_meio concluido em {time.perf_counter() - t_vaz:.2f}s (max_row agora={sheet.max_row})")
 
         # PASSADA 1: Contagem de duplicados + limpeza de zeros (OTIMIZADO)
+        print(f"[PRODUTOS] Iniciando PASSADA 1 (contagem duplicados + limpeza zeros)... max_row={sheet.max_row}")
+        t_p1 = time.perf_counter()
         seen_codproduto = {}
         seen_codaux = {}
         idx_codproduto = header.get("CodProduto")
@@ -2371,6 +2519,8 @@ class PlanilhaValidator:
                 if aux_val:
                     seen_codaux[aux_val] = seen_codaux.get(aux_val, 0) + 1
 
+        print(f"[PRODUTOS] PASSADA 1 concluida em {time.perf_counter() - t_p1:.2f}s - {total_linhas_planilha} linhas com dados encontradas")
+
         # Verifica se há duplicatas
         any_duplicates = any(v > 1 for v in seen_codproduto.values()) or any(v > 1 for v in seen_codaux.values())
 
@@ -2400,6 +2550,8 @@ class PlanilhaValidator:
         ultimo_progresso_reportado = -1
 
         # PASSADA 2: Validação completa
+        print(f"[PRODUTOS] Iniciando PASSADA 2 (validacao completa)... total_linhas_planilha={total_linhas_planilha}")
+        t_p2 = time.perf_counter()
         total_linhas = 0
         linhas_validas = 0
         linhas_erros = 0
@@ -3134,6 +3286,8 @@ class PlanilhaValidator:
                 cell = sheet.cell(row=row[0].row, column=result_col)
                 cell.font = Font(bold=True)
                 
+        print(f"[PRODUTOS] PASSADA 2 concluida em {time.perf_counter() - t_p2:.2f}s - {total_linhas} linhas validadas ({linhas_validas} validas, {linhas_advertencias} advertencias, {linhas_erros} erros)")
+
         duplicados_vazios = True
         if "Duplicados" in header:
             for row in sheet.iter_rows(
@@ -3150,13 +3304,17 @@ class PlanilhaValidator:
         self.gerar_status_por_aba(
             "PRODUTOS", total_linhas, linhas_validas, linhas_advertencias, linhas_erros
         )
+        print(f"[PRODUTOS] Iniciando aplicar_borda... max_row={sheet.max_row}")
+        t_borda = time.perf_counter()
         self.aplicar_borda(sheet)
+        print(f"[PRODUTOS] aplicar_borda concluido em {time.perf_counter() - t_borda:.2f}s")
         max_length = 0
         for row in sheet.iter_rows(min_row=2, min_col=result_col, max_col=result_col):
             for cell in row:
                 if cell.value:
                     max_length = max(max_length, len(str(cell.value)))
         sheet.column_dimensions[get_column_letter(result_col)].width = max_length * 1.2
+        print(f"[PRODUTOS] validar_PRODUTOS FINALIZADO")
         return None
 
 
