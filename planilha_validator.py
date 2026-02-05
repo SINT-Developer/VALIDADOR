@@ -2159,6 +2159,8 @@ class PlanilhaValidator:
                 else:
                     cell_rs.fill = COR_VALIDO
             # Validar CNPJCPF
+            # Aceita CPF (11 digitos), CNPJ (14 digitos), ou com zeros extras a esquerda (ate 15)
+            # NAO valida digito verificador - apenas verifica se tem quantidade de digitos valida
             idx_cnpjcpf = header.get("CNPJCPF")
             if idx_cnpjcpf is not None:
                 cell_doc = row[idx_cnpjcpf]
@@ -2166,21 +2168,19 @@ class PlanilhaValidator:
                 if doc_raw:
                     import re
                     doc_digitos = re.sub(r'\D', '', doc_raw)
-                    if len(doc_digitos) == 11:
-                        if not self._validar_cpf(doc_digitos):
-                            cell_doc.fill = COR_ERRO
-                            mensagens.append("CNPJCPF inválido (CPF com dígito verificador incorreto)")
-                        else:
-                            cell_doc.fill = COR_VALIDO
-                    elif len(doc_digitos) == 14:
-                        if not self._validar_cnpj(doc_digitos):
-                            cell_doc.fill = COR_ERRO
-                            mensagens.append("CNPJCPF inválido (CNPJ com dígito verificador incorreto)")
-                        else:
-                            cell_doc.fill = COR_VALIDO
-                    else:
+                    # Aceita: 11 digitos (CPF), 14 digitos (CNPJ)
+                    # Aceita tambem 12-13 digitos (CPF/CNPJ com zeros parciais)
+                    # Aceita 15 digitos (CNPJ com zero extra ou CPF com 4 zeros)
+                    if len(doc_digitos) >= 11 and len(doc_digitos) <= 15:
+                        cell_doc.fill = COR_VALIDO
+                    elif len(doc_digitos) > 15:
                         cell_doc.fill = COR_ERRO
-                        mensagens.append(f"CNPJCPF inválido ({len(doc_digitos)} dígitos - esperado 11 para CPF ou 14 para CNPJ)")
+                        mensagens.append(f"CNPJCPF excede 15 digitos ({len(doc_digitos)} digitos)")
+                    elif len(doc_digitos) > 0:
+                        cell_doc.fill = COR_ERRO
+                        mensagens.append(f"CNPJCPF insuficiente ({len(doc_digitos)} digitos - minimo 11)")
+                    else:
+                        cell_doc.fill = COR_VALIDO
                 else:
                     cell_doc.fill = COR_VALIDO
             idx = header.get("IERG")

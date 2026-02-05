@@ -9,6 +9,7 @@ import os
 import sys
 import threading
 import time
+import pyodbc
 
 # Paths
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -23,6 +24,21 @@ from mapeamento import ORDEM_IMPORTACAO
 from planilha_validator import PlanilhaValidator
 
 APP_VERSION = "1.0.0"
+
+# Lista de drivers ODBC para tentar (ordem de preferencia)
+ODBC_DRIVERS = [
+    "ODBC Driver 18 for SQL Server",
+    "ODBC Driver 17 for SQL Server",
+    "ODBC Driver 13.1 for SQL Server",
+    "ODBC Driver 13 for SQL Server",
+    "ODBC Driver 11 for SQL Server",
+    "SQL Server Native Client 11.0",
+    "SQL Server Native Client 10.0",
+    "SQL Server Native Client",
+    "SQL Server",
+]
+
+
 
 
 class ImportadorApp:
@@ -50,6 +66,9 @@ class ImportadorApp:
         self.abas_vars = {}
         for aba in ORDEM_IMPORTACAO:
             self.abas_vars[aba] = tk.BooleanVar(value=True)
+
+        # Driver ODBC detectado (None = ainda nao detectado)
+        self.odbc_driver = None
 
         self._build_ui()
 
@@ -158,9 +177,30 @@ class ImportadorApp:
             self.file_path.set(path)
             self.status_var.set(f"Arquivo: {os.path.basename(path)}")
 
-    def _conn_str(self):
+    def _detectar_driver_odbc(self):
+        """Tenta cada driver ODBC ate encontrar um que funcione."""
+        for driver in ODBC_DRIVERS:
+            conn_str = (
+                f"DRIVER={{{driver}}};"
+                f"SERVER={self.servidor.get()};"
+                f"DATABASE={self.banco.get()};"
+                f"UID={self.usuario.get()};"
+                f"PWD={self.senha.get()};"
+                f"TrustServerCertificate=yes;"
+            )
+            try:
+                conn = pyodbc.connect(conn_str, timeout=5)
+                conn.close()
+                return driver
+            except Exception:
+                continue
+        return None
+
+    def _conn_str(self, driver=None):
+        """Retorna connection string usando o driver especificado ou o detectado."""
+        drv = driver or self.odbc_driver or "ODBC Driver 17 for SQL Server"
         return (
-            f"DRIVER={{ODBC Driver 17 for SQL Server}};"
+            f"DRIVER={{{drv}}};"
             f"SERVER={self.servidor.get()};"
             f"DATABASE={self.banco.get()};"
             f"UID={self.usuario.get()};"
@@ -169,11 +209,61 @@ class ImportadorApp:
         )
 
     def _testar_conexao(self):
-        ok, msg = PlanilhaImportador.testar_conexao(self._conn_str())
-        if ok:
-            messagebox.showinfo("Conexao", msg)
-        else:
-            messagebox.showerror("Erro de Conexao", msg)
+            """
+            Versao Espia: Tenta varios drivers ODBC e descobre o nome real do servidor e do banco.
+            """
+            self.status_var.set("Detectando driver ODBC...")
+            self.root.update_idletasks()
+
+            # Tenta detectar o driver automaticamente
+            driver = self._detectar_driver_odbc()
+
+            if driver is None:
+                drivers_testados = "\n".join(f"  - {d}" for d in ODBC_DRIVERS)
+                messagebox.showerror(
+                    "Falha na Conexao",
+                    f"Nao foi possivel conectar com nenhum driver ODBC.\n\n"
+                    f"Drivers testados:\n{drivers_testados}\n\n"
+                    f"Verifique se o SQL Server esta acessivel e se\n"
+                    f"algum driver ODBC esta instalado."
+                )
+                self.status_var.set("Falha na conexao")
+                return
+
+            # Salva o driver que funcionou
+            self.odbc_driver = driver
+
+            try:
+                conn_str = self._conn_str()
+                conn = pyodbc.connect(conn_str, timeout=5)
+                cursor = conn.cursor()
+
+                # Pergunta ao banco o nome do servidor e o nome do database atual
+                cursor.execute("SELECT @@SERVERNAME, DB_NAME()")
+                row = cursor.fetchone()
+
+                server_real = row[0]
+                db_real = row[1]
+                conn.close()
+
+                # Mostra o relatorio
+                msg = (
+                    f"CONEXAO BEM SUCEDIDA!\n\n"
+                    f"--------------------------------------------------\n"
+                    f"Driver ODBC:  {driver}\n"
+                    f"SERVIDOR:     {server_real}\n"
+                    f"BANCO:        {db_real}\n"
+                    f"--------------------------------------------------\n\n"
+                    f"IMPORTANTE:\n"
+                    f"Verifique se no seu SQL Management Studio o servidor\n"
+                    f"e o banco sao EXATAMENTE esses nomes."
+                )
+                messagebox.showinfo("Diagnostico de Conexao", msg)
+                self.status_var.set(f"Conectado via {driver}")
+
+            except Exception as e:
+                messagebox.showerror("Falha na Conexao", f"Nao foi possivel conectar:\n{str(e)}")
+                self.status_var.set("Falha na conexao")
 
     def _log(self, msg):
         def _append():
@@ -221,6 +311,24 @@ class ImportadorApp:
                     "(pedidos, cadastros, configuracoes).\n\nTem certeza?",
                     icon="warning"):
                 return
+
+        # Se o driver ODBC ainda nao foi detectado, detecta agora
+        if self.odbc_driver is None:
+            self.status_var.set("Detectando driver ODBC...")
+            self.root.update_idletasks()
+            driver = self._detectar_driver_odbc()
+            if driver is None:
+                drivers_testados = "\n".join(f"  - {d}" for d in ODBC_DRIVERS)
+                messagebox.showerror(
+                    "Falha na Conexao",
+                    f"Nao foi possivel conectar com nenhum driver ODBC.\n\n"
+                    f"Drivers testados:\n{drivers_testados}\n\n"
+                    f"Verifique a conexao antes de importar."
+                )
+                self.status_var.set("Falha na conexao")
+                return
+            self.odbc_driver = driver
+            self._log(f"Driver ODBC detectado: {driver}")
 
         # Limpar log
         self.log_text.configure(state=tk.NORMAL)

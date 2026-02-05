@@ -1,6 +1,8 @@
 """
-SQL para importacao em lote de produtos (ImportaProdutoAmbos_Lote).
-Substitui ~34.000 roundtrips por 1 unico bulk insert + 1 chamada de procedure.
+SQL para importacao em lote.
+- ImportaProdutoAmbos_Lote: ~34.000 roundtrips -> 1 bulk insert + 1 call
+- ImportaTransportadora_Lote: importacao em lote de transportadoras
+- ImportaCliente_Lote: importacao em lote de clientes
 """
 
 # ----------------------------------------------------------------
@@ -298,11 +300,12 @@ BEGIN
       AND qtdetabela2 % qtdemultipla != 0
       AND erro IS NULL
 
-    -- 19. QtdeTabela1 > 0: QtdeTabela3 > QtdeTabela2 e <= 999999
+    -- 19. QtdeTabela1 > 0: QtdeTabela3 > QtdeTabela2 e <= 999999 (so valida se preenchido)
     UPDATE #W SET erro = 'QtdeTabela3 deve ser maior que QtdeTabela2 e menor ou igual a 999999.'
     WHERE qtdetabela1 IS NOT NULL AND qtdetabela1 > 0
       AND qtdetabela2 IS NOT NULL
-      AND (qtdetabela3 IS NULL OR qtdetabela3 <= qtdetabela2 OR qtdetabela3 > 999999)
+      AND qtdetabela3 IS NOT NULL
+      AND (qtdetabela3 <= qtdetabela2 OR qtdetabela3 > 999999)
       AND erro IS NULL
 
     -- 20. QtdeTabela1 > 0: QtdeTabela3 divisivel por QtdeMultipla
@@ -645,7 +648,7 @@ BEGIN
 END
 """
 
-# SQL para inserir dados na staging
+# SQL para inserir dados na staging de produtos
 SQL_INSERT_STAGING = """
 INSERT INTO ImportaProdutoAmbos_Staging (
     codproduto, codauxiliarproduto, produto,
@@ -656,4 +659,447 @@ INSERT INTO ImportaProdutoAmbos_Staging (
     codfamilia, codestilo, qtdemultipla, qtdeminima,
     qtdetabela1, qtdetabela2, qtdetabela3, qtdeetiquetas
 ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+"""
+
+# ================================================================
+# TRANSPORTADORA - Importacao em lote
+# ================================================================
+
+SQL_CREATE_STAGING_TRANSPORTADORA = """
+IF OBJECT_ID('dbo.ImportaTransportadora_Staging','U') IS NULL
+BEGIN
+    CREATE TABLE dbo.ImportaTransportadora_Staging (
+        linha                   int IDENTITY(1,1) PRIMARY KEY,
+        codtransportadora       smallint,
+        transportadora          varchar(20),
+        transportadorapadrao    char(1)
+    );
+END
+"""
+
+SQL_CREATE_PROCEDURE_TRANSPORTADORA = """
+IF OBJECT_ID('dbo.ImportaTransportadora_Lote','P') IS NOT NULL
+    DROP PROCEDURE dbo.ImportaTransportadora_Lote;
+"""
+
+SQL_CREATE_PROCEDURE_BODY_TRANSPORTADORA = """
+CREATE PROCEDURE dbo.ImportaTransportadora_Lote
+    @sobreescreve tinyint = 2
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Verifica empresa configurada
+    IF NOT EXISTS (SELECT 1 FROM empresa WHERE codempresa = 1)
+    BEGIN
+        SELECT linha, codtransportadora, 'ERRO' AS status,
+            'Nao foi possivel importar Transportadoras porque Empresa nao foi configurada.' AS mensagem
+        FROM ImportaTransportadora_Staging ORDER BY linha
+        RETURN
+    END
+
+    -- Work table com coluna de erro
+    SELECT
+        linha, codtransportadora, transportadora, transportadorapadrao,
+        CAST(NULL AS varchar(250)) AS erro
+    INTO #W
+    FROM ImportaTransportadora_Staging
+
+    -- Aplicar defaults
+    UPDATE #W SET transportadorapadrao = 'N' WHERE transportadorapadrao IS NULL
+
+    -- Popula PKUnica
+    DELETE FROM Transportadora_PKUnica
+    INSERT INTO Transportadora_PKUnica (codtransportadora)
+    SELECT codtransportadora FROM #W WHERE codtransportadora IS NOT NULL
+
+    -- ============================================================
+    -- VALIDACOES
+    -- ============================================================
+
+    -- 1. CodTransportadora obrigatorio e range
+    UPDATE #W SET erro = 'CodTransportadora nao pode ser null e deve estar entre 1 e 32767.'
+    WHERE (codtransportadora IS NULL OR codtransportadora < 1 OR codtransportadora > 32767)
+      AND erro IS NULL
+
+    -- 2. Duplicidade no arquivo
+    ;WITH dups AS (
+        SELECT codtransportadora, COUNT(*)-1 AS qtd
+        FROM #W WHERE codtransportadora IS NOT NULL
+        GROUP BY codtransportadora HAVING COUNT(*) > 1
+    )
+    UPDATE w SET erro = 'Transportadora ' + CONVERT(varchar(5), w.codtransportadora) + ' tem ' +
+        CONVERT(varchar(5), d.qtd) +
+        CASE WHEN d.qtd = 1 THEN ' duplicidade' ELSE ' duplicidades' END +
+        ' no arquivo.'
+    FROM #W w INNER JOIN dups d ON w.codtransportadora = d.codtransportadora
+    WHERE w.erro IS NULL
+
+    -- 3. Modo 1: nao pode existir
+    IF @sobreescreve = 1
+    BEGIN
+        UPDATE w SET erro = 'Transportadora ' + CONVERT(varchar(5), w.codtransportadora) + ' ja existe no Banco de Dados.'
+        FROM #W w INNER JOIN Transportadora t ON w.codtransportadora = t.codtransportadora
+        WHERE w.erro IS NULL
+    END
+    -- Modo 3: deve existir
+    ELSE IF @sobreescreve = 3
+    BEGIN
+        UPDATE w SET erro = 'Transportadora ' + CONVERT(varchar(5), w.codtransportadora) + ' nao existe no Banco de Dados.'
+        FROM #W w LEFT JOIN Transportadora t ON w.codtransportadora = t.codtransportadora
+        WHERE t.codtransportadora IS NULL AND w.erro IS NULL
+    END
+
+    -- 4. Transportadora (nome) obrigatorio
+    UPDATE #W SET erro = 'Transportadora nao pode ser null.'
+    WHERE transportadora IS NULL AND erro IS NULL
+
+    -- 5. TransportadoraPadrao valido
+    UPDATE #W SET erro = 'TransportadoraPadrao deve ser S ou N.'
+    WHERE transportadorapadrao NOT IN ('S', 'N') AND erro IS NULL
+
+    -- ============================================================
+    -- IMPORTACAO
+    -- ============================================================
+    BEGIN TRY
+        BEGIN TRANSACTION
+
+        -- UPDATE existentes (modo 2 ou 3)
+        IF @sobreescreve IN (2, 3)
+        BEGIN
+            UPDATE t SET
+                transportadora = w.transportadora,
+                transportadorapadrao = w.transportadorapadrao
+            FROM Transportadora t
+            INNER JOIN #W w ON t.codtransportadora = w.codtransportadora
+            WHERE w.erro IS NULL
+        END
+
+        -- INSERT novos (modo 1 ou 2)
+        IF @sobreescreve IN (1, 2)
+        BEGIN
+            INSERT INTO Transportadora (codtransportadora, transportadora, transportadorapadrao)
+            SELECT w.codtransportadora, w.transportadora, w.transportadorapadrao
+            FROM #W w
+            LEFT JOIN Transportadora t ON w.codtransportadora = t.codtransportadora
+            WHERE t.codtransportadora IS NULL AND w.erro IS NULL
+        END
+
+        -- Transportadora_Imp: espelho
+        UPDATE imp SET
+            transportadora = w.transportadora,
+            transportadorapadrao = w.transportadorapadrao,
+            transportadora_rec = 1,
+            transportadorapadrao_rec = 1
+        FROM Transportadora_Imp imp
+        INNER JOIN #W w ON imp.codtransportadora = w.codtransportadora
+        WHERE w.erro IS NULL
+
+        INSERT INTO Transportadora_Imp (codtransportadora, transportadora, transportadorapadrao,
+            transportadora_rec, transportadorapadrao_rec)
+        SELECT w.codtransportadora, w.transportadora, w.transportadorapadrao, 1, 1
+        FROM #W w
+        LEFT JOIN Transportadora_Imp imp ON w.codtransportadora = imp.codtransportadora
+        WHERE imp.codtransportadora IS NULL AND w.erro IS NULL
+
+        COMMIT TRANSACTION
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION
+        UPDATE #W SET erro = 'Erro de banco de dados: ' + LEFT(ERROR_MESSAGE(), 200)
+        WHERE erro IS NULL
+    END CATCH
+
+    -- Retorna resultado
+    SELECT
+        linha, codtransportadora,
+        CASE WHEN erro IS NULL THEN 'OK' ELSE 'ERRO' END AS status,
+        ISNULL(erro, 'Importacao efetuada com sucesso.') AS mensagem
+    FROM #W ORDER BY linha
+END
+"""
+
+SQL_INSERT_STAGING_TRANSPORTADORA = """
+INSERT INTO ImportaTransportadora_Staging (codtransportadora, transportadora, transportadorapadrao)
+VALUES (?, ?, ?)
+"""
+
+# ================================================================
+# CLIENTE - Importacao em lote
+# ================================================================
+
+SQL_CREATE_STAGING_CLIENTE = """
+IF OBJECT_ID('dbo.ImportaCliente_Staging','U') IS NULL
+BEGIN
+    CREATE TABLE dbo.ImportaCliente_Staging (
+        linha               int IDENTITY(1,1) PRIMARY KEY,
+        codcliente          int,
+        codrepresentante    smallint,
+        nomefantasia        varchar(20),
+        razaosocial         varchar(40),
+        cnpjcpf             varchar(19),
+        ierg                varchar(19),
+        logradouro          varchar(40),
+        bairro              varchar(20),
+        cidade              varchar(20),
+        uf                  char(2),
+        cep                 varchar(9),
+        ddd                 tinyint,
+        telefone1           varchar(9),
+        telefone2           varchar(9),
+        fax                 varchar(9),
+        nomecontato         varchar(40),
+        nometransportadora  varchar(20),
+        observacao          varchar(20),
+        email               varchar(40),
+        precotabela         tinyint,
+        codtransportadora   smallint
+    );
+END
+"""
+
+SQL_CREATE_PROCEDURE_CLIENTE = """
+IF OBJECT_ID('dbo.ImportaCliente_Lote','P') IS NOT NULL
+    DROP PROCEDURE dbo.ImportaCliente_Lote;
+"""
+
+SQL_CREATE_PROCEDURE_BODY_CLIENTE = """
+CREATE PROCEDURE dbo.ImportaCliente_Lote
+    @sobreescreve tinyint = 2
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- Verifica empresa configurada
+    IF NOT EXISTS (SELECT 1 FROM empresa WHERE codempresa = 1)
+    BEGIN
+        SELECT linha, codcliente, 'ERRO' AS status,
+            'Nao foi possivel importar Clientes porque Empresa nao foi configurada.' AS mensagem
+        FROM ImportaCliente_Staging ORDER BY linha
+        RETURN
+    END
+
+    -- Work table com coluna de erro
+    SELECT
+        linha, codcliente, codrepresentante, nomefantasia, razaosocial,
+        cnpjcpf, ierg, logradouro, bairro, cidade, uf, cep,
+        ddd, telefone1, telefone2, fax, nomecontato,
+        nometransportadora, observacao, email, precotabela, codtransportadora,
+        CAST(NULL AS varchar(250)) AS erro
+    INTO #W
+    FROM ImportaCliente_Staging
+
+    -- Aplicar defaults
+    IF @sobreescreve = 2
+        UPDATE #W SET precotabela = 0 WHERE precotabela IS NULL
+
+    -- CodRepresentante 0 -> NULL
+    UPDATE #W SET codrepresentante = NULL WHERE codrepresentante = 0
+
+    -- Popula PKUnica
+    DELETE FROM Cliente_PKUnica
+    INSERT INTO Cliente_PKUnica (codcliente)
+    SELECT codcliente FROM #W WHERE codcliente IS NOT NULL
+
+    -- ============================================================
+    -- VALIDACOES
+    -- ============================================================
+
+    -- 1. CodCliente obrigatorio e range
+    UPDATE #W SET erro = 'CodCliente nao pode ser null e deve estar entre 1 e 9999999.'
+    WHERE (codcliente IS NULL OR codcliente < 1 OR codcliente > 9999999)
+      AND erro IS NULL
+
+    -- 2. Duplicidade no arquivo
+    ;WITH dups AS (
+        SELECT codcliente, COUNT(*)-1 AS qtd
+        FROM #W WHERE codcliente IS NOT NULL
+        GROUP BY codcliente HAVING COUNT(*) > 1
+    )
+    UPDATE w SET erro = 'Cliente ' + CONVERT(varchar(7), w.codcliente) + ' tem ' +
+        CONVERT(varchar(5), d.qtd) +
+        CASE WHEN d.qtd = 1 THEN ' duplicidade' ELSE ' duplicidades' END +
+        ' no arquivo.'
+    FROM #W w INNER JOIN dups d ON w.codcliente = d.codcliente
+    WHERE w.erro IS NULL
+
+    -- 3. Modo 1: nao pode existir
+    IF @sobreescreve = 1
+    BEGIN
+        UPDATE w SET erro = 'Cliente ' + CONVERT(varchar(7), w.codcliente) + ' ja existe no Banco de Dados.'
+        FROM #W w INNER JOIN Cliente c ON w.codcliente = c.codcliente
+        WHERE w.erro IS NULL
+    END
+    -- Modo 3: deve existir
+    ELSE IF @sobreescreve = 3
+    BEGIN
+        UPDATE w SET erro = 'Cliente ' + CONVERT(varchar(7), w.codcliente) + ' nao existe no Banco de Dados.'
+        FROM #W w LEFT JOIN Cliente c ON w.codcliente = c.codcliente
+        WHERE c.codcliente IS NULL AND w.erro IS NULL
+    END
+
+    -- 4. CodRepresentante FK
+    UPDATE w SET erro = 'Representante ' + CONVERT(varchar(5), w.codrepresentante) + ' nao cadastrado no Banco de Dados.'
+    FROM #W w
+    WHERE w.codrepresentante IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM Representante r WHERE r.codrepresentante = w.codrepresentante)
+      AND w.erro IS NULL
+
+    -- 5. NomeFantasia obrigatorio
+    UPDATE #W SET erro = 'NomeFantasia nao pode ser null.'
+    WHERE nomefantasia IS NULL AND erro IS NULL
+
+    -- 6. PrecoTabela range
+    UPDATE #W SET erro = 'Tabela de Preco deve ser null ou estar entre 0 e 3.'
+    WHERE precotabela IS NOT NULL AND (precotabela < 0 OR precotabela > 3)
+      AND erro IS NULL
+
+    -- 7. CodTransportadora FK (se informado)
+    UPDATE w SET erro = 'Transportadora ' + CONVERT(varchar(5), w.codtransportadora) + ' nao cadastrada no Banco de Dados.'
+    FROM #W w
+    WHERE w.codtransportadora IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM Transportadora t WHERE t.codtransportadora = w.codtransportadora)
+      AND w.erro IS NULL
+
+    -- ============================================================
+    -- IMPORTACAO
+    -- ============================================================
+    BEGIN TRY
+        BEGIN TRANSACTION
+
+        -- UPDATE existentes (modo 2 ou 3)
+        IF @sobreescreve IN (2, 3)
+        BEGIN
+            UPDATE c SET
+                codrepresentante = w.codrepresentante,
+                nomefantasia = w.nomefantasia,
+                razaosocial = w.razaosocial,
+                cnpjcpf = w.cnpjcpf,
+                ierg = w.ierg,
+                logradouro = w.logradouro,
+                bairro = w.bairro,
+                cidade = w.cidade,
+                uf = w.uf,
+                cep = w.cep,
+                ddd = w.ddd,
+                telefone1 = w.telefone1,
+                telefone2 = w.telefone2,
+                fax = w.fax,
+                nomecontato = w.nomecontato,
+                observacao = w.observacao,
+                email = w.email,
+                clientenovo = 'N',
+                precotabela = w.precotabela,
+                codtransportadora = w.codtransportadora,
+                codatualizacao = 1
+            FROM Cliente c
+            INNER JOIN #W w ON c.codcliente = w.codcliente
+            WHERE w.erro IS NULL
+        END
+
+        -- INSERT novos (modo 1 ou 2)
+        IF @sobreescreve IN (1, 2)
+        BEGIN
+            INSERT INTO Cliente (
+                codcliente, codrepresentante, nomefantasia, razaosocial,
+                cnpjcpf, ierg, logradouro, bairro, cidade, uf, cep,
+                ddd, telefone1, telefone2, fax, nomecontato, observacao, email,
+                clientenovo, precotabela, codtransportadora, codatualizacao)
+            SELECT
+                w.codcliente, w.codrepresentante, w.nomefantasia, w.razaosocial,
+                w.cnpjcpf, w.ierg, w.logradouro, w.bairro, w.cidade, w.uf, w.cep,
+                w.ddd, w.telefone1, w.telefone2, w.fax, w.nomecontato, w.observacao, w.email,
+                'N', w.precotabela, w.codtransportadora, 1
+            FROM #W w
+            LEFT JOIN Cliente c ON w.codcliente = c.codcliente
+            WHERE c.codcliente IS NULL AND w.erro IS NULL
+        END
+
+        -- Cliente_Imp: espelho
+        UPDATE imp SET
+            codrepresentante = w.codrepresentante,
+            nomefantasia = w.nomefantasia,
+            razaosocial = w.razaosocial,
+            cnpjcpf = w.cnpjcpf,
+            ierg = w.ierg,
+            logradouro = w.logradouro,
+            bairro = w.bairro,
+            cidade = w.cidade,
+            uf = w.uf,
+            cep = w.cep,
+            ddd = w.ddd,
+            telefone1 = w.telefone1,
+            telefone2 = w.telefone2,
+            fax = w.fax,
+            nomecontato = w.nomecontato,
+            observacao = w.observacao,
+            email = w.email,
+            precotabela = w.precotabela,
+            codtransportadora = w.codtransportadora,
+            codrepresentante_rec = 1,
+            nomefantasia_rec = 1,
+            razaosocial_rec = 1,
+            cnpjcpf_rec = 1,
+            ierg_rec = 1,
+            logradouro_rec = 1,
+            bairro_rec = 1,
+            cidade_rec = 1,
+            uf_rec = 1,
+            cep_rec = 1,
+            ddd_rec = 1,
+            telefone1_rec = 1,
+            telefone2_rec = 1,
+            fax_rec = 1,
+            nomecontato_rec = 1,
+            observacao_rec = 1,
+            email_rec = 1,
+            precotabela_rec = 1,
+            codtransportadora_rec = 1
+        FROM Cliente_Imp imp
+        INNER JOIN #W w ON imp.codcliente = w.codcliente
+        WHERE w.erro IS NULL
+
+        INSERT INTO Cliente_Imp (
+            codcliente, codrepresentante, nomefantasia, razaosocial,
+            cnpjcpf, ierg, logradouro, bairro, cidade, uf, cep,
+            ddd, telefone1, telefone2, fax, nomecontato, observacao, email,
+            precotabela, codtransportadora,
+            codrepresentante_rec, nomefantasia_rec, razaosocial_rec, cnpjcpf_rec, ierg_rec,
+            logradouro_rec, bairro_rec, cidade_rec, uf_rec, cep_rec, ddd_rec,
+            telefone1_rec, telefone2_rec, fax_rec, nomecontato_rec, observacao_rec, email_rec,
+            precotabela_rec, codtransportadora_rec)
+        SELECT
+            w.codcliente, w.codrepresentante, w.nomefantasia, w.razaosocial,
+            w.cnpjcpf, w.ierg, w.logradouro, w.bairro, w.cidade, w.uf, w.cep,
+            w.ddd, w.telefone1, w.telefone2, w.fax, w.nomecontato, w.observacao, w.email,
+            w.precotabela, w.codtransportadora,
+            1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1
+        FROM #W w
+        LEFT JOIN Cliente_Imp imp ON w.codcliente = imp.codcliente
+        WHERE imp.codcliente IS NULL AND w.erro IS NULL
+
+        COMMIT TRANSACTION
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION
+        UPDATE #W SET erro = 'Erro de banco de dados: ' + LEFT(ERROR_MESSAGE(), 200)
+        WHERE erro IS NULL
+    END CATCH
+
+    -- Retorna resultado
+    SELECT
+        linha, codcliente,
+        CASE WHEN erro IS NULL THEN 'OK' ELSE 'ERRO' END AS status,
+        ISNULL(erro, 'Importacao efetuada com sucesso.') AS mensagem
+    FROM #W ORDER BY linha
+END
+"""
+
+SQL_INSERT_STAGING_CLIENTE = """
+INSERT INTO ImportaCliente_Staging (
+    codcliente, codrepresentante, nomefantasia, razaosocial,
+    cnpjcpf, ierg, logradouro, bairro, cidade, uf, cep,
+    ddd, telefone1, telefone2, fax, nomecontato,
+    nometransportadora, observacao, email, precotabela, codtransportadora
+) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
 """

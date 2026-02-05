@@ -4,6 +4,7 @@ Motor de importacao - executa as stored procedures no SQL Server.
 
 import os
 import time
+from datetime import datetime
 import pyodbc
 from openpyxl import load_workbook
 from mapeamento import MAPA_ABAS, ORDEM_IMPORTACAO
@@ -12,10 +13,28 @@ from sql_batch import (
     SQL_CREATE_PROCEDURE,
     SQL_CREATE_PROCEDURE_BODY,
     SQL_INSERT_STAGING,
+    # Transportadora
+    SQL_CREATE_STAGING_TRANSPORTADORA,
+    SQL_CREATE_PROCEDURE_TRANSPORTADORA,
+    SQL_CREATE_PROCEDURE_BODY_TRANSPORTADORA,
+    SQL_INSERT_STAGING_TRANSPORTADORA,
+    # Cliente
+    SQL_CREATE_STAGING_CLIENTE,
+    SQL_CREATE_PROCEDURE_CLIENTE,
+    SQL_CREATE_PROCEDURE_BODY_CLIENTE,
+    SQL_INSERT_STAGING_CLIENTE,
 )
 
 
 class PlanilhaImportador:
+
+    # Drivers que suportam fast_executemany sem problemas
+    DRIVERS_FAST_EXECUTEMANY = [
+        "ODBC Driver 18",
+        "ODBC Driver 17",
+        "ODBC Driver 13",
+        "ODBC Driver 11",
+    ]
 
     def __init__(self, connection_string, progress_callback=None, log_callback=None):
         self.connection_string = connection_string
@@ -23,6 +42,14 @@ class PlanilhaImportador:
         self.log_callback = log_callback
         self.conn = None
         self.cancelar = False
+        self._fast_executemany_ok = self._verificar_fast_executemany()
+
+    def _verificar_fast_executemany(self):
+        """Verifica se o driver suporta fast_executemany."""
+        for driver in self.DRIVERS_FAST_EXECUTEMANY:
+            if driver in self.connection_string:
+                return True
+        return False
 
     def _log(self, msg):
         if self.log_callback:
@@ -39,6 +66,11 @@ class PlanilhaImportador:
 
     def conectar(self):
         self.conn = pyodbc.connect(self.connection_string, autocommit=True)
+        cursor = self.conn.cursor()
+        cursor.execute("SELECT DB_NAME()")
+        self.database_name = cursor.fetchone()[0]
+        cursor.close()
+
 
     def desconectar(self):
         if self.conn:
@@ -114,7 +146,7 @@ class PlanilhaImportador:
         return val
 
     # Campos onde valor 0 deve ser convertido para NULL (constraint > 0 OR NULL)
-    _ZERO_TO_NULL = {"@ddd", "@codtransportadora", "@codrepresentante"}
+    _ZERO_TO_NULL = {"@ddd", "@codtransportadora", "@codrepresentante", "@qtdetabela1", "@qtdetabela2", "@qtdetabela3", "@codfamilia", "@codestilo", "@qtdemultipla", "@qtdeminima", "@qtdeetiquetas"}
 
     def _formatar_cep(self, valor):
         """Formata CEP para formato SRPP (NNNNN-NNN, 9 chars) ou None."""
@@ -473,6 +505,9 @@ class PlanilhaImportador:
 
         # Map excel column -> (index_in_col_order, tipo_sql)
         col_type = {c[0]: c[2] for c in colunas}
+        
+        # NOVO: Mapear NomeExcel para @NomeParametroSQL para checar a lista _ZERO_TO_NULL
+        col_sql_param = {c[0]: c[1].lower() for c in colunas} 
 
         batch_rows = []
         for row in linhas:
@@ -481,16 +516,27 @@ class PlanilhaImportador:
                 idx = header_map.get(col_name)
                 if idx is not None and idx < len(row):
                     valor = self._converter_valor(row[idx], col_type.get(col_name, "varchar"))
+                    
+                    # --- CORRECAO AQUI ---
+                    # Se for string vazia, vira None
                     if isinstance(valor, str) and valor.strip() == "":
                         valor = None
+                    
+                    # Se estiver na lista de Zeros Proibidos e for 0, vira None (NULL no banco)
+                    param_name = col_sql_param.get(col_name, "")
+                    if param_name in self._ZERO_TO_NULL and valor == 0:
+                        valor = None
+                    # ---------------------
+
                 else:
                     valor = None
                 vals.append(valor)
             batch_rows.append(vals)
 
-        # 4. Bulk insert via fast_executemany
+        # 4. Bulk insert (fast_executemany se driver suportar)
         cursor = self.conn.cursor()
-        cursor.fast_executemany = True
+        if self._fast_executemany_ok:
+            cursor.fast_executemany = True
         try:
             cursor.executemany(SQL_INSERT_STAGING, batch_rows)
         finally:
@@ -521,11 +567,318 @@ class PlanilhaImportador:
                 sucesso += 1
             else:
                 erros += 1
-                self._log(f"  ERRO PRODUTOS linha {linha_num} PK=[{codprod}, {codaux}]: {mensagem}")
+                self._log(
+    f"  ERRO PRODUTOS | DB={self.database_name} | PROC=ImportaProdutoAmbos_Lote "
+    f"| linha {linha_num} PK=[{codprod}, {codaux}]: {mensagem}"
+)
+
+
+        # Limpar staging table após processamento
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("TRUNCATE TABLE ImportaProdutoAmbos_Staging")
+            while cursor.nextset():
+                pass
+        finally:
+            cursor.close()
 
         elapsed = time.time() - t0
         self._log(f"  PRODUTOS: {sucesso} ok, {erros} erros | {total} linhas em {elapsed:.1f}s")
         self._progresso(prog_base + prog_range, f"PRODUTOS concluido: {sucesso} ok, {erros} erros")
+        return sucesso, erros
+
+    # ----------------------------------------------------------
+    # Importacao em lote: TRANSPORTADORA
+    # ----------------------------------------------------------
+
+    def _setup_batch_objects_transportadora(self):
+        """Cria staging table e procedure de lote para transportadora."""
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(SQL_CREATE_STAGING_TRANSPORTADORA)
+            while cursor.nextset():
+                pass
+        finally:
+            cursor.close()
+
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(SQL_CREATE_PROCEDURE_TRANSPORTADORA)
+            while cursor.nextset():
+                pass
+        finally:
+            cursor.close()
+
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(SQL_CREATE_PROCEDURE_BODY_TRANSPORTADORA)
+            while cursor.nextset():
+                pass
+        finally:
+            cursor.close()
+
+    def _importar_transportadoras_lote(self, wb, sobreescreve, prog_base, prog_range):
+        """Importa TRANSP usando staging table + procedure batch."""
+        t0 = time.time()
+        self._log("--- Importando TRANSP (modo lote) ---")
+
+        config = MAPA_ABAS["TRANSP"]
+        header_map, rows = self._ler_linhas_aba(wb, "TRANSP")
+        if header_map is None:
+            self._log("  Aba TRANSP nao encontrada!")
+            return 0, 1
+
+        pk0_idx = header_map.get("CodTransportadora")
+        if pk0_idx is None:
+            self._log("  Coluna PK 'CodTransportadora' nao encontrada em TRANSP")
+            return 0, 1
+
+        linhas = [r for r in rows if pk0_idx < len(r) and r[pk0_idx] is not None and str(r[pk0_idx]).strip()]
+        total = len(linhas)
+        if total == 0:
+            self._log("  Nenhuma linha valida em TRANSP")
+            return 0, 0
+
+        # 1. Setup
+        self._progresso(prog_base, "Preparando importacao em lote (TRANSP)...")
+        self._setup_batch_objects_transportadora()
+
+        # 2. Limpar staging
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("TRUNCATE TABLE ImportaTransportadora_Staging")
+            while cursor.nextset():
+                pass
+        finally:
+            cursor.close()
+
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("DBCC CHECKIDENT ('ImportaTransportadora_Staging', RESEED, 0)")
+            while cursor.nextset():
+                pass
+        finally:
+            cursor.close()
+
+        # 3. Montar dados
+        self._progresso(prog_base + 2, f"Carregando {total} transportadoras no staging...")
+        col_order = ["CodTransportadora", "Transportadora", "TransportadoraPadrao"]
+
+        batch_rows = []
+        for row in linhas:
+            vals = []
+            for col_name in col_order:
+                idx = header_map.get(col_name)
+                if idx is not None and idx < len(row):
+                    valor = self._converter_valor(row[idx], "varchar")
+                    if isinstance(valor, str) and valor.strip() == "":
+                        valor = None
+                else:
+                    valor = None
+                vals.append(valor)
+            batch_rows.append(vals)
+
+        # 4. Bulk insert (fast_executemany se driver suportar)
+        cursor = self.conn.cursor()
+        if self._fast_executemany_ok:
+            cursor.fast_executemany = True
+        try:
+            cursor.executemany(SQL_INSERT_STAGING_TRANSPORTADORA, batch_rows)
+        finally:
+            cursor.close()
+
+        self._log(f"  {total} linhas inseridas no staging.")
+        self._progresso(prog_base + int(prog_range * 0.3), "Executando importacao em lote (TRANSP)...")
+
+        # 5. Executar procedure
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(f"SET NOCOUNT ON; EXEC ImportaTransportadora_Lote @sobreescreve={sobreescreve}")
+            results = cursor.fetchall()
+        finally:
+            cursor.close()
+
+        # 6. Processar resultados
+        sucesso = 0
+        erros = 0
+        for row in results:
+            linha_num = row[0]
+            codtransp = row[1]
+            status = row[2]
+            mensagem = row[3]
+
+            if status == "OK":
+                sucesso += 1
+            else:
+                erros += 1
+                self._log(f"  ERRO TRANSP | DB={self.database_name} | linha {linha_num} PK=[{codtransp}]: {mensagem}")
+
+        # 7. Limpar staging
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("TRUNCATE TABLE ImportaTransportadora_Staging")
+            while cursor.nextset():
+                pass
+        finally:
+            cursor.close()
+
+        elapsed = time.time() - t0
+        self._log(f"  TRANSP: {sucesso} ok, {erros} erros | {total} linhas em {elapsed:.1f}s")
+        self._progresso(prog_base + prog_range, f"TRANSP concluido: {sucesso} ok, {erros} erros")
+        return sucesso, erros
+
+    # ----------------------------------------------------------
+    # Importacao em lote: CLIENTE
+    # ----------------------------------------------------------
+
+    def _setup_batch_objects_cliente(self):
+        """Cria staging table e procedure de lote para cliente."""
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(SQL_CREATE_STAGING_CLIENTE)
+            while cursor.nextset():
+                pass
+        finally:
+            cursor.close()
+
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(SQL_CREATE_PROCEDURE_CLIENTE)
+            while cursor.nextset():
+                pass
+        finally:
+            cursor.close()
+
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(SQL_CREATE_PROCEDURE_BODY_CLIENTE)
+            while cursor.nextset():
+                pass
+        finally:
+            cursor.close()
+
+    def _importar_clientes_lote(self, wb, sobreescreve, prog_base, prog_range):
+        """Importa CLIENTES usando staging table + procedure batch."""
+        t0 = time.time()
+        self._log("--- Importando CLIENTES (modo lote) ---")
+
+        config = MAPA_ABAS["CLIENTES"]
+        header_map, rows = self._ler_linhas_aba(wb, "CLIENTES")
+        if header_map is None:
+            self._log("  Aba CLIENTES nao encontrada!")
+            return 0, 1
+
+        pk0_idx = header_map.get("CodCliente")
+        if pk0_idx is None:
+            self._log("  Coluna PK 'CodCliente' nao encontrada em CLIENTES")
+            return 0, 1
+
+        linhas = [r for r in rows if pk0_idx < len(r) and r[pk0_idx] is not None and str(r[pk0_idx]).strip()]
+        total = len(linhas)
+        if total == 0:
+            self._log("  Nenhuma linha valida em CLIENTES")
+            return 0, 0
+
+        # 1. Setup
+        self._progresso(prog_base, "Preparando importacao em lote (CLIENTES)...")
+        self._setup_batch_objects_cliente()
+
+        # 2. Limpar staging
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("TRUNCATE TABLE ImportaCliente_Staging")
+            while cursor.nextset():
+                pass
+        finally:
+            cursor.close()
+
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("DBCC CHECKIDENT ('ImportaCliente_Staging', RESEED, 0)")
+            while cursor.nextset():
+                pass
+        finally:
+            cursor.close()
+
+        # 3. Montar dados
+        self._progresso(prog_base + 2, f"Carregando {total} clientes no staging...")
+        col_order = [
+            "CodCliente", "CodRepresentante", "NomeFantasia", "RazaoSocial",
+            "CNPJCPF", "IERG", "Logradouro", "Bairro", "Cidade", "UF", "CEP",
+            "DDD", "Telefone1", "Telefone2", "FAX", "NomeContato",
+            "NomeTransportadora", "Observacao", "EMail", "PrecoTabela", "CodTransportadora"
+        ]
+
+        batch_rows = []
+        for row in linhas:
+            vals = []
+            for col_name in col_order:
+                idx = header_map.get(col_name)
+                if idx is not None and idx < len(row):
+                    tipo = "int" if col_name in ("CodCliente", "CodRepresentante", "DDD", "PrecoTabela", "CodTransportadora") else "varchar"
+                    valor = self._converter_valor(row[idx], tipo)
+                    if isinstance(valor, str) and valor.strip() == "":
+                        valor = None
+                    # CNPJCPF e CEP: formatar
+                    if col_name == "CNPJCPF" and valor:
+                        valor = self._formatar_cnpjcpf(valor)
+                    elif col_name == "CEP" and valor:
+                        valor = self._formatar_cep(valor)
+                    # CodRepresentante e CodTransportadora: 0 -> NULL
+                    if col_name in ("CodRepresentante", "CodTransportadora") and valor == 0:
+                        valor = None
+                else:
+                    valor = None
+                vals.append(valor)
+            batch_rows.append(vals)
+
+        # 4. Bulk insert (fast_executemany se driver suportar)
+        cursor = self.conn.cursor()
+        if self._fast_executemany_ok:
+            cursor.fast_executemany = True
+        try:
+            cursor.executemany(SQL_INSERT_STAGING_CLIENTE, batch_rows)
+        finally:
+            cursor.close()
+
+        self._log(f"  {total} linhas inseridas no staging.")
+        self._progresso(prog_base + int(prog_range * 0.3), "Executando importacao em lote (CLIENTES)...")
+
+        # 5. Executar procedure
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute(f"SET NOCOUNT ON; EXEC ImportaCliente_Lote @sobreescreve={sobreescreve}")
+            results = cursor.fetchall()
+        finally:
+            cursor.close()
+
+        # 6. Processar resultados
+        sucesso = 0
+        erros = 0
+        for row in results:
+            linha_num = row[0]
+            codcliente = row[1]
+            status = row[2]
+            mensagem = row[3]
+
+            if status == "OK":
+                sucesso += 1
+            else:
+                erros += 1
+                self._log(f"  ERRO CLIENTES | DB={self.database_name} | linha {linha_num} PK=[{codcliente}]: {mensagem}")
+
+        # 7. Limpar staging
+        cursor = self.conn.cursor()
+        try:
+            cursor.execute("TRUNCATE TABLE ImportaCliente_Staging")
+            while cursor.nextset():
+                pass
+        finally:
+            cursor.close()
+
+        elapsed = time.time() - t0
+        self._log(f"  CLIENTES: {sucesso} ok, {erros} erros | {total} linhas em {elapsed:.1f}s")
+        self._progresso(prog_base + prog_range, f"CLIENTES concluido: {sucesso} ok, {erros} erros")
         return sucesso, erros
 
     def _pk_str(self, row, pk_cols, header_map):
@@ -538,10 +891,94 @@ class PlanilhaImportador:
         return ", ".join(vals)
 
     # ----------------------------------------------------------
+    # Backup
+    # ----------------------------------------------------------
+
+    def _fazer_backup(self, operacao="Apagar Pedidos e Cadastros e Configuracoes"):
+        """
+        Faz backup do banco antes de operacoes destrutivas.
+        Salva no caminho padrao da instancia SQL Server.
+        Formato: {BANCO} - {EMPRESA} - {DATA} {HORA} - {OPERACAO}.bak
+        """
+        self._log("Fazendo backup do banco de dados...")
+
+        backup_path = None
+        cursor = self.conn.cursor()
+        try:
+            # 1. Tentar obter caminho de backup da instancia (SQL 2012+)
+            cursor.execute("SELECT SERVERPROPERTY('InstanceDefaultBackupPath')")
+            row = cursor.fetchone()
+            backup_path = row[0] if row and row[0] else None
+        except Exception:
+            pass
+        finally:
+            cursor.close()
+
+        # Fallback: usar diretorio do arquivo de dados do banco
+        if not backup_path:
+            cursor = self.conn.cursor()
+            try:
+                cursor.execute(f"""
+                    SELECT LEFT(physical_name, LEN(physical_name) - CHARINDEX('\\', REVERSE(physical_name)))
+                    FROM sys.master_files
+                    WHERE database_id = DB_ID('{self.database_name}') AND type = 0
+                """)
+                row = cursor.fetchone()
+                backup_path = row[0] if row else None
+            except Exception:
+                pass
+            finally:
+                cursor.close()
+
+        if not backup_path:
+            self._log("  AVISO: Nao foi possivel obter caminho de backup")
+            return False
+
+        cursor = self.conn.cursor()
+        try:
+            # 2. Buscar nome da empresa
+            cursor.execute("SELECT Empresa FROM empresa WHERE codempresa = 1")
+            row = cursor.fetchone()
+            empresa_nome = row[0] if row else "SEM_EMPRESA"
+            # Limpar caracteres invalidos para nome de arquivo
+            empresa_nome = empresa_nome.replace("/", "-").replace("\\", "-").replace(":", "-")
+            empresa_nome = empresa_nome.replace("*", "-").replace("?", "-").replace("\"", "-")
+            empresa_nome = empresa_nome.replace("<", "-").replace(">", "-").replace("|", "-")
+        finally:
+            cursor.close()
+
+        # 3. Gerar nome do arquivo
+        agora = datetime.now()
+        data_hora = agora.strftime("%Y-%m-%d %Hh%Mm%S")
+        nome_arquivo = f"{self.database_name} - {empresa_nome} - {data_hora} - {operacao}.bak"
+        caminho_completo = os.path.join(backup_path, nome_arquivo)
+
+        self._log(f"  Destino: {caminho_completo}")
+
+        cursor = self.conn.cursor()
+        try:
+            # 4. Executar backup
+            sql = f"BACKUP DATABASE [{self.database_name}] TO DISK = N'{caminho_completo}' WITH NOFORMAT, INIT, NAME = N'{self.database_name}-Full', SKIP, NOREWIND, NOUNLOAD, STATS = 10"
+            cursor.execute(sql)
+            # Consumir todos os result sets (mensagens de progresso)
+            while cursor.nextset():
+                pass
+            self._log(f"  Backup concluido com sucesso!")
+            return True
+        except pyodbc.Error as e:
+            self._log(f"  ERRO no backup: {self._extrair_msg_erro(e)}")
+            return False
+        finally:
+            cursor.close()
+
+    # ----------------------------------------------------------
     # Limpeza
     # ----------------------------------------------------------
 
     def excluir_tudo(self):
+        # Fazer backup antes de excluir
+        self._fazer_backup("Apagar Pedidos e Cadastros e Configuracoes")
+
         # Limpar tabelas que a procedure nao deleta mas que tem FK para as que ela deleta
         self._log("Limpando tabelas com FK dependente...")
         cursor = self.conn.cursor()
@@ -627,6 +1064,10 @@ class PlanilhaImportador:
                     s, e = self._importar_empresa(wb, sobreescreve)
                 elif nome_aba == "PRODUTOS":
                     s, e = self._importar_produtos_lote(wb, sobreescreve, prog_base, prog_range)
+                elif nome_aba == "TRANSP":
+                    s, e = self._importar_transportadoras_lote(wb, sobreescreve, prog_base, prog_range)
+                elif nome_aba == "CLIENTES":
+                    s, e = self._importar_clientes_lote(wb, sobreescreve, prog_base, prog_range)
                 else:
                     s, e = self._importar_aba_padrao(wb, nome_aba, sobreescreve, prog_base, prog_range)
 
