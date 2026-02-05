@@ -10,6 +10,11 @@ import sys
 import threading
 import time
 import pyodbc
+import urllib.request
+import json
+import tempfile
+import subprocess
+import ssl
 
 # Paths
 script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -23,7 +28,115 @@ from motor import PlanilhaImportador
 from mapeamento import ORDEM_IMPORTACAO
 from planilha_validator import PlanilhaValidator
 
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.4"
+VERSION_URL = "https://gist.githubusercontent.com/SINT-Developer/4005d983a51756ce108aef5f064f6c01/raw/importador_version.json"
+
+
+def comparar_versoes(v1, v2):
+    """Compara duas versoes. Retorna 1 se v1 > v2, -1 se v1 < v2, 0 se iguais."""
+    def parse(v):
+        return [int(x) for x in v.replace("v", "").split(".")]
+    p1, p2 = parse(v1), parse(v2)
+    for a, b in zip(p1, p2):
+        if a > b:
+            return 1
+        if a < b:
+            return -1
+    return 0
+
+
+def verificar_atualizacao():
+    """Verifica se ha uma nova versao disponivel. Retorna (nova_versao, download_url) ou (None, None)."""
+    try:
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+        url_com_cache_bust = f"{VERSION_URL}?t={int(time.time())}"
+        req = urllib.request.Request(url_com_cache_bust, headers={'User-Agent': 'Mozilla/5.0', 'Cache-Control': 'no-cache'})
+        with urllib.request.urlopen(req, timeout=10, context=ctx) as response:
+            data = json.loads(response.read().decode('utf-8'))
+            versao_remota = data.get("version", "")
+            download_url = data.get("download_url", "")
+
+            if versao_remota and comparar_versoes(versao_remota, APP_VERSION) > 0:
+                return versao_remota, download_url
+    except Exception as e:
+        print(f"Erro ao verificar atualizacao: {e}")
+    return None, None
+
+
+def baixar_atualizacao(download_url, callback_progresso=None):
+    """Baixa o novo executavel. Retorna o caminho do arquivo baixado ou None."""
+    try:
+        temp_dir = tempfile.gettempdir()
+        temp_file = os.path.join(temp_dir, "Importador_SINT_update.exe")
+
+        def report_progress(block_num, block_size, total_size):
+            if callback_progresso and total_size > 0:
+                percent = int(block_num * block_size * 100 / total_size)
+                callback_progresso(min(percent, 100))
+
+        urllib.request.urlretrieve(download_url, temp_file, report_progress)
+        return temp_file
+    except Exception as e:
+        print(f"Erro ao baixar atualizacao: {e}")
+        return None
+
+
+def aplicar_atualizacao(novo_exe_path):
+    """Cria script batch para substituir o exe e reiniciar o app."""
+    try:
+        exe_atual = sys.executable
+
+        if not getattr(sys, 'frozen', False):
+            print("Modo desenvolvimento - atualizacao simulada")
+            return False
+
+        batch_path = os.path.join(tempfile.gettempdir(), "update_importador.bat")
+        exe_nome = os.path.basename(exe_atual)
+
+        batch_content = f'''@echo off
+echo Aguardando o aplicativo fechar...
+timeout /t 3 /nobreak >nul
+
+:check_process
+tasklist /FI "IMAGENAME eq {exe_nome}" 2>NUL | find /I "{exe_nome}" >NUL
+if not errorlevel 1 (
+    echo Aplicativo ainda em execucao, aguardando...
+    timeout /t 2 /nobreak >nul
+    goto check_process
+)
+
+echo Aplicativo fechado. Aplicando atualizacao...
+timeout /t 1 /nobreak >nul
+
+copy /Y "{novo_exe_path}" "{exe_atual}"
+if errorlevel 1 (
+    echo Erro ao copiar arquivo. Tentando novamente...
+    timeout /t 3 /nobreak >nul
+    copy /Y "{novo_exe_path}" "{exe_atual}"
+)
+
+if errorlevel 1 (
+    echo ERRO: Nao foi possivel atualizar o aplicativo.
+    pause
+) else (
+    echo Atualizacao concluida com sucesso!
+)
+
+del "{novo_exe_path}" 2>nul
+del "%~f0"
+'''
+
+        with open(batch_path, 'w') as f:
+            f.write(batch_content)
+
+        subprocess.Popen(['cmd', '/c', batch_path], creationflags=subprocess.CREATE_NO_WINDOW)
+        return True
+    except Exception as e:
+        print(f"Erro ao aplicar atualizacao: {e}")
+        return False
 
 # Lista de drivers ODBC para tentar (ordem de preferencia)
 ODBC_DRIVERS = [
@@ -59,13 +172,15 @@ GRUPOS_ABAS = [
 ]
 
 
+
+
 class ImportadorApp:
 
     def __init__(self, root):
         self.root = root
         self.root.title(f"Importador de Planilhas - SINT v{APP_VERSION}")
-        self.root.geometry("700x620")
-        self.root.minsize(600, 500)  # Tamanho minimo
+        self.root.geometry("800x600")
+        self.root.minsize(700, 500)
 
         # Variaveis
         self.file_path = tk.StringVar()
@@ -80,6 +195,13 @@ class ImportadorApp:
         self.progress_var = tk.DoubleVar(value=0)
         self.status_var = tk.StringVar(value="Selecione uma planilha para iniciar")
 
+        # Opcoes de validacao (igual ao validador_standalone)
+        self.criar_novo_arquivo = tk.BooleanVar(value=True)
+        self.gerar_etiquetas = tk.BooleanVar(value=True)
+
+        # Controle de exibicao da conexao SQL
+        self.mostrar_conexao = tk.BooleanVar(value=False)
+
         self.abas_vars = {}
         for aba in ORDEM_IMPORTACAO:
             self.abas_vars[aba] = tk.BooleanVar(value=True)
@@ -87,24 +209,91 @@ class ImportadorApp:
         # Driver ODBC detectado (None = ainda nao detectado)
         self.odbc_driver = None
 
-        # Dados para as abas de resultado
+        # Dados de log (integrado na mesma janela)
         self.resultado_resumo = {}
         self.resultado_detalhes = []
         self.resultado_erros = []
 
         self._build_ui()
 
+        # Verificar atualizacao em background
+        threading.Thread(target=self._verificar_atualizacao_background, daemon=True).start()
+
+    # ----------------------------------------------------------
+    # Auto-Update
+    # ----------------------------------------------------------
+
+    def _verificar_atualizacao_background(self):
+        """Verifica atualizacao em background e mostra dialogo se houver."""
+        nova_versao, download_url = verificar_atualizacao()
+        if nova_versao and download_url:
+            self.root.after(0, lambda: self._mostrar_dialogo_atualizacao(nova_versao, download_url))
+
+    def _mostrar_dialogo_atualizacao(self, nova_versao, download_url):
+        """Mostra dialogo perguntando se deseja atualizar."""
+        resposta = messagebox.askyesno(
+            "Atualizacao Disponivel",
+            f"Nova versao disponivel: v{nova_versao}\n"
+            f"Versao atual: v{APP_VERSION}\n\n"
+            "Deseja atualizar agora?"
+        )
+        if resposta:
+            self._executar_atualizacao(download_url)
+
+    def _executar_atualizacao(self, download_url):
+        """Executa o processo de atualizacao."""
+        progress_window = tk.Toplevel(self.root)
+        progress_window.title("Atualizando...")
+        progress_window.geometry("300x100")
+        progress_window.resizable(False, False)
+        progress_window.transient(self.root)
+        progress_window.grab_set()
+
+        ttk.Label(progress_window, text="Baixando atualizacao...").pack(pady=10)
+        progress_bar = ttk.Progressbar(progress_window, length=250, mode='determinate')
+        progress_bar.pack(pady=10)
+
+        def atualizar_progresso(percent):
+            progress_bar['value'] = percent
+            progress_window.update()
+
+        def fazer_download():
+            novo_exe = baixar_atualizacao(download_url, atualizar_progresso)
+            if novo_exe:
+                progress_window.destroy()
+                if aplicar_atualizacao(novo_exe):
+                    messagebox.showinfo(
+                        "Atualizacao Concluida",
+                        "A atualizacao foi aplicada com sucesso!\n\n"
+                        "O aplicativo sera fechado. Por favor, abra-o novamente."
+                    )
+                    self.root.destroy()
+                else:
+                    messagebox.showerror("Erro", "Nao foi possivel aplicar a atualizacao.")
+            else:
+                progress_window.destroy()
+                messagebox.showerror("Erro", "Falha ao baixar a atualizacao.")
+
+        threading.Thread(target=fazer_download, daemon=True).start()
+
     # ----------------------------------------------------------
     # UI
     # ----------------------------------------------------------
 
     def _build_ui(self):
-        main = ttk.Frame(self.root, padding=8)
-        main.pack(fill=tk.BOTH, expand=True)
+        # Notebook principal (abas: Importador / Logs)
+        self.notebook_principal = ttk.Notebook(self.root)
+        self.notebook_principal.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-        # Configurar para expandir
+        # =======================================================
+        # ABA 1: IMPORTADOR
+        # =======================================================
+        self.tab_importador = ttk.Frame(self.notebook_principal)
+        self.notebook_principal.add(self.tab_importador, text="Importador")
+
+        main = ttk.Frame(self.tab_importador, padding=8)
+        main.pack(fill=tk.BOTH, expand=True)
         main.columnconfigure(0, weight=1)
-        #main.rowconfigure(6, weight=1)  # Linha do resultado expande
 
         ttk.Label(main, text="Importador de Planilhas", font=("Arial", 12, "bold")).grid(row=0, column=0, pady=(0, 5), sticky=tk.W)
 
@@ -115,11 +304,27 @@ class ImportadorApp:
         ttk.Entry(f, textvariable=self.file_path, state="readonly").grid(row=0, column=0, sticky=tk.EW, padx=(0, 5))
         ttk.Button(f, text="Procurar", command=self._browse).grid(row=0, column=1)
 
-        # Conexao - Layout compacto 2x2
+        # Conexao SQL Server - Colapsavel
         f = ttk.LabelFrame(main, text="Conexao SQL Server", padding=4)
         f.grid(row=2, column=0, sticky=tk.EW, pady=(0, 4))
-        g = ttk.Frame(f)
-        g.pack(fill=tk.X)
+
+        # Header clicavel para expandir/colapsar
+        header_frame = ttk.Frame(f)
+        header_frame.pack(fill=tk.X)
+
+        self.btn_toggle_conexao = ttk.Checkbutton(
+            header_frame, text="Mostrar configuracoes de conexao",
+            variable=self.mostrar_conexao, command=self._toggle_conexao
+        )
+        self.btn_toggle_conexao.pack(side=tk.LEFT)
+
+        ttk.Button(header_frame, text="Testar", command=self._testar_conexao, width=8).pack(side=tk.RIGHT)
+
+        # Frame com os campos (inicialmente oculto)
+        self.frame_conexao_campos = ttk.Frame(f)
+
+        g = ttk.Frame(self.frame_conexao_campos)
+        g.pack(fill=tk.X, pady=(5, 0))
 
         ttk.Label(g, text="Servidor:").grid(row=0, column=0, sticky=tk.W, padx=(0, 2))
         ttk.Entry(g, textvariable=self.servidor, width=18).grid(row=0, column=1, padx=(0, 10))
@@ -130,8 +335,6 @@ class ImportadorApp:
         ttk.Entry(g, textvariable=self.usuario, width=18).grid(row=1, column=1, padx=(0, 10), pady=(3, 0))
         ttk.Label(g, text="Senha:").grid(row=1, column=2, sticky=tk.W, padx=(0, 2), pady=(3, 0))
         ttk.Entry(g, textvariable=self.senha, width=18, show="*").grid(row=1, column=3, padx=(0, 10), pady=(3, 0))
-
-        ttk.Button(g, text="Testar", command=self._testar_conexao).grid(row=0, column=4, rowspan=2, padx=(5, 0))
 
         # Modo - Apenas 2 opcoes
         f = ttk.LabelFrame(main, text="Modo", padding=4)
@@ -145,7 +348,6 @@ class ImportadorApp:
         f = ttk.LabelFrame(main, text="Abas para Importar", padding=4)
         f.grid(row=4, column=0, sticky=tk.EW, pady=(0, 4))
 
-        # Grid de grupos
         grupos_frame = ttk.Frame(f)
         grupos_frame.pack(fill=tk.X)
 
@@ -157,34 +359,49 @@ class ImportadorApp:
                 if aba in self.abas_vars:
                     ttk.Checkbutton(gf, text=aba, variable=self.abas_vars[aba]).pack(anchor=tk.W)
 
-        # Botoes marcar/desmarcar
         bf = ttk.Frame(f)
         bf.pack(fill=tk.X, pady=(4, 0))
         ttk.Button(bf, text="Todas", command=lambda: self._set_abas(True), width=8).pack(side=tk.LEFT, padx=2)
         ttk.Button(bf, text="Nenhuma", command=lambda: self._set_abas(False), width=8).pack(side=tk.LEFT, padx=2)
 
-        # Opcoes - Compacto com versao que some
-        f = ttk.LabelFrame(main, text="Opcoes", padding=4)
+        # Opcoes de Validacao
+        f = ttk.LabelFrame(main, text="Opcoes de Validacao", padding=4)
         f.grid(row=5, column=0, sticky=tk.EW, pady=(0, 4))
+
+        # Linha 1: Validar antes + Versao
+        g1 = ttk.Frame(f)
+        g1.pack(fill=tk.X)
+
+        ttk.Checkbutton(g1, text="Validar antes de importar", variable=self.validar_antes,
+                       command=self._toggle_opcoes_validacao).pack(side=tk.LEFT)
+
+        # Frame das opcoes de validacao (inicialmente oculto)
+        self.frame_opcoes_validacao = ttk.Frame(g1)
+
+        ttk.Label(self.frame_opcoes_validacao, text="Versao:").pack(side=tk.LEFT, padx=(15, 2))
+        ttk.Combobox(self.frame_opcoes_validacao, textvariable=self.versao_srppwin,
+                    values=["19.1.5", "20.1.0"], state="readonly", width=8).pack(side=tk.LEFT)
+
+        # Linha 2: Opcoes de arquivo (aparecem junto com validar)
+        self.frame_opcoes_arquivo = ttk.Frame(f)
+
+        ttk.Checkbutton(self.frame_opcoes_arquivo, text="Gerar novo arquivo (desmarcado = sobrescrever original)",
+                       variable=self.criar_novo_arquivo).pack(anchor=tk.W)
+        ttk.Checkbutton(self.frame_opcoes_arquivo, text="Gerar planilha de etiquetas (se houver QtdeEtiquetas > 0)",
+                       variable=self.gerar_etiquetas).pack(anchor=tk.W)
+
+        # Opcoes Gerais
+        f = ttk.LabelFrame(main, text="Opcoes Gerais", padding=4)
+        f.grid(row=6, column=0, sticky=tk.EW, pady=(0, 4))
         g = ttk.Frame(f)
         g.pack(fill=tk.X)
 
-        ttk.Checkbutton(g, text="Validar antes", variable=self.validar_antes,
-                       command=self._toggle_versao).pack(side=tk.LEFT)
-
-        # Frame da versao (inicialmente oculto)
-        self.frame_versao = ttk.Frame(g)
-        ttk.Label(self.frame_versao, text="Versao:").pack(side=tk.LEFT, padx=(5, 2))
-        ttk.Combobox(self.frame_versao, textvariable=self.versao_srppwin,
-                    values=["19.1.5", "20.1.0"], state="readonly", width=8).pack(side=tk.LEFT)
-        # Nao mostra inicialmente pois validar_antes = False
-
-        ttk.Checkbutton(g, text="Excluir TUDO antes (backup automatico)",
-                       variable=self.excluir_tudo_var).pack(side=tk.LEFT, padx=(20, 0))
+        ttk.Checkbutton(g, text="Excluir TUDO antes da importacao (backup automatico)",
+                       variable=self.excluir_tudo_var).pack(side=tk.LEFT)
 
         # Botao e Progresso
         bf = ttk.Frame(main, padding=8)
-        bf.grid(row=6, column=0, sticky=tk.EW, pady=(8, 6))
+        bf.grid(row=7, column=0, sticky=tk.EW, pady=(8, 6))
         bf.columnconfigure(0, weight=1)
 
         self.btn_importar = ttk.Button(
@@ -194,7 +411,6 @@ class ImportadorApp:
         )
         self.btn_importar.grid(row=0, column=0, sticky=tk.EW, ipady=8)
 
-
         pf = ttk.Frame(bf)
         pf.grid(row=1, column=0, sticky=tk.EW, pady=(4, 0))
         pf.columnconfigure(0, weight=1)
@@ -202,62 +418,69 @@ class ImportadorApp:
         self.lbl_status = ttk.Label(pf, textvariable=self.status_var, font=("Arial", 8), width=35, anchor=tk.W)
         self.lbl_status.grid(row=0, column=1)
 
-        # Resultado com Abas (expande)
-        f = ttk.LabelFrame(main, text="Resultado", padding=4)
-        f.grid(row=7, column=0, sticky=tk.NSEW, pady=(0, 0))
-        f.columnconfigure(0, weight=1)
-        f.rowconfigure(0, weight=1)
+        # Creditos
+        ttk.Label(main, text="Desenvolvido por SINT", font=("Arial", 8), foreground="gray").grid(
+            row=8, column=0, pady=(5, 0), sticky=tk.E)
 
-        self.notebook = ttk.Notebook(f)
-        self.notebook.grid(row=0, column=0, sticky=tk.NSEW)
+        # =======================================================
+        # ABA 2: LOGS
+        # =======================================================
+        self.tab_logs = ttk.Frame(self.notebook_principal)
+        self.notebook_principal.add(self.tab_logs, text="Logs")
 
-        # Aba Resumo
-        self.frame_resumo = ttk.Frame(self.notebook)
-        self.notebook.add(self.frame_resumo, text="Resumo")
+        self._build_logs_tab()
+
+    def _build_logs_tab(self):
+        """Constroi a aba de Logs com 3 sub-abas (Resumo/Detalhes/Erros)."""
+        main = ttk.Frame(self.tab_logs, padding=10)
+        main.pack(fill=tk.BOTH, expand=True)
+        main.columnconfigure(0, weight=1)
+        main.rowconfigure(0, weight=1)
+
+        # Notebook interno (sub-abas)
+        self.notebook_logs = ttk.Notebook(main)
+        self.notebook_logs.grid(row=0, column=0, sticky=tk.NSEW)
+
+        # Sub-aba Resumo
+        self.frame_resumo = ttk.Frame(self.notebook_logs)
+        self.notebook_logs.add(self.frame_resumo, text="Resumo")
         self._build_resumo_grid()
 
-        # Aba Detalhes
-        self.frame_detalhes = ttk.Frame(self.notebook)
-        self.notebook.add(self.frame_detalhes, text="Detalhes")
+        # Sub-aba Detalhes
+        self.frame_detalhes = ttk.Frame(self.notebook_logs)
+        self.notebook_logs.add(self.frame_detalhes, text="Detalhes")
         self.frame_detalhes.columnconfigure(0, weight=1)
         self.frame_detalhes.rowconfigure(0, weight=1)
-        self.text_detalhes = tk.Text(self.frame_detalhes, font=("Consolas", 9), state=tk.DISABLED, wrap=tk.WORD)
+        self.text_detalhes = tk.Text(self.frame_detalhes, font=("Consolas", 10), state=tk.DISABLED, wrap=tk.WORD)
         sb_det = ttk.Scrollbar(self.frame_detalhes, orient=tk.VERTICAL, command=self.text_detalhes.yview)
         self.text_detalhes.configure(yscrollcommand=sb_det.set)
         self.text_detalhes.grid(row=0, column=0, sticky=tk.NSEW)
         sb_det.grid(row=0, column=1, sticky=tk.NS)
 
-        # Aba Erros
-        self.frame_erros = ttk.Frame(self.notebook)
-        self.notebook.add(self.frame_erros, text="Erros (0)")
+        # Sub-aba Erros
+        self.frame_erros = ttk.Frame(self.notebook_logs)
+        self.notebook_logs.add(self.frame_erros, text="Erros (0)")
         self.frame_erros.columnconfigure(0, weight=1)
         self.frame_erros.rowconfigure(0, weight=1)
-        self.text_erros = tk.Text(self.frame_erros, font=("Consolas", 9), state=tk.DISABLED, wrap=tk.WORD, fg="#CC0000")
+        self.text_erros = tk.Text(self.frame_erros, font=("Consolas", 10), state=tk.DISABLED, wrap=tk.WORD, fg="#CC0000")
         sb_err = ttk.Scrollbar(self.frame_erros, orient=tk.VERTICAL, command=self.text_erros.yview)
         self.text_erros.configure(yscrollcommand=sb_err.set)
         self.text_erros.grid(row=0, column=0, sticky=tk.NSEW)
         sb_err.grid(row=0, column=1, sticky=tk.NS)
 
-        # Configurar peso das linhas para expansao
-        main.rowconfigure(7, weight=1)
-
-    def _toggle_versao(self):
-        """Mostra/esconde o seletor de versao baseado no checkbox validar."""
-        if self.validar_antes.get():
-            self.frame_versao.pack(side=tk.LEFT)
-        else:
-            self.frame_versao.pack_forget()
+        # Botao Limpar
+        btn_frame = ttk.Frame(main)
+        btn_frame.grid(row=1, column=0, pady=(10, 0))
+        ttk.Button(btn_frame, text="Limpar Logs", command=self._limpar_logs, width=15).pack()
 
     def _build_resumo_grid(self):
         """Constroi o grid de resumo com checkmarks."""
-        # Limpar frame
         for w in self.frame_resumo.winfo_children():
             w.destroy()
 
         self.frame_resumo.columnconfigure(0, weight=1)
         self.frame_resumo.rowconfigure(0, weight=1)
 
-        # Canvas com scroll
         canvas = tk.Canvas(self.frame_resumo, highlightthickness=0)
         scrollbar = ttk.Scrollbar(self.frame_resumo, orient="vertical", command=canvas.yview)
         self.resumo_inner = ttk.Frame(canvas)
@@ -269,21 +492,32 @@ class ImportadorApp:
         canvas.grid(row=0, column=0, sticky=tk.NSEW)
         scrollbar.grid(row=0, column=1, sticky=tk.NS)
 
-        # Labels de resumo (vazios inicialmente)
-        self.resumo_labels = {}
+    def _toggle_conexao(self):
+        """Mostra/esconde os campos de conexao SQL Server."""
+        if self.mostrar_conexao.get():
+            self.frame_conexao_campos.pack(fill=tk.X)
+        else:
+            self.frame_conexao_campos.pack_forget()
+
+    def _toggle_opcoes_validacao(self):
+        """Mostra/esconde as opcoes de validacao baseado no checkbox validar."""
+        if self.validar_antes.get():
+            self.frame_opcoes_validacao.pack(side=tk.LEFT)
+            self.frame_opcoes_arquivo.pack(fill=tk.X, pady=(5, 0))
+        else:
+            self.frame_opcoes_validacao.pack_forget()
+            self.frame_opcoes_arquivo.pack_forget()
 
     def _atualizar_resumo(self):
         """Atualiza o grid de resumo com os resultados."""
-        # Limpar inner frame
         for w in self.resumo_inner.winfo_children():
             w.destroy()
 
         if not self.resultado_resumo:
             ttk.Label(self.resumo_inner, text="Nenhuma importacao realizada ainda.",
-                     font=("Arial", 9), foreground="gray").pack(pady=20)
+                     font=("Arial", 10), foreground="gray").pack(pady=20)
             return
 
-        # Grid de resultados
         row = 0
         col = 0
         total_ok = 0
@@ -299,11 +533,9 @@ class ImportadorApp:
             total_ok += sucesso
             total_erros += erros
 
-            # Frame para cada aba
             af = ttk.Frame(self.resumo_inner)
-            af.grid(row=row, column=col, padx=8, pady=4, sticky=tk.W)
+            af.grid(row=row, column=col, padx=10, pady=6, sticky=tk.W)
 
-            # Checkmark ou X
             if erros == 0:
                 marca = "OK"
                 cor = "#228B22"
@@ -311,30 +543,53 @@ class ImportadorApp:
                 marca = "ERRO"
                 cor = "#CC0000"
 
-            ttk.Label(af, text=marca, font=("Arial", 9, "bold"), foreground=cor, width=5).pack(side=tk.LEFT)
-            ttk.Label(af, text=f"{aba}", font=("Arial", 9, "bold"), width=12, anchor=tk.W).pack(side=tk.LEFT)
-            ttk.Label(af, text=f"{sucesso}/{total}", font=("Arial", 9), width=10).pack(side=tk.LEFT)
+            ttk.Label(af, text=marca, font=("Arial", 10, "bold"), foreground=cor, width=6).pack(side=tk.LEFT)
+            ttk.Label(af, text=f"{aba}", font=("Arial", 10, "bold"), width=14, anchor=tk.W).pack(side=tk.LEFT)
+            ttk.Label(af, text=f"{sucesso}/{total}", font=("Arial", 10), width=10).pack(side=tk.LEFT)
 
             col += 1
             if col >= 2:
                 col = 0
                 row += 1
 
-        # Linha de total
         row += 1
         sep = ttk.Separator(self.resumo_inner, orient=tk.HORIZONTAL)
-        sep.grid(row=row, column=0, columnspan=2, sticky=tk.EW, pady=8, padx=5)
+        sep.grid(row=row, column=0, columnspan=2, sticky=tk.EW, pady=10, padx=5)
 
         row += 1
         tf = ttk.Frame(self.resumo_inner)
-        tf.grid(row=row, column=0, columnspan=2, pady=5)
+        tf.grid(row=row, column=0, columnspan=2, pady=8)
 
-        cor_total = "#228B22" if total_erros == 0 else "#CC0000"
         ttk.Label(tf, text=f"TOTAL: {total_ok}/{total_ok + total_erros} importados",
-                 font=("Arial", 10, "bold")).pack(side=tk.LEFT)
+                 font=("Arial", 11, "bold")).pack(side=tk.LEFT)
         if total_erros > 0:
             ttk.Label(tf, text=f" ({total_erros} erros)",
-                     font=("Arial", 10, "bold"), foreground="#CC0000").pack(side=tk.LEFT)
+                     font=("Arial", 11, "bold"), foreground="#CC0000").pack(side=tk.LEFT)
+
+    def _limpar_logs(self):
+        """Limpa todos os logs."""
+        self.resultado_resumo = {}
+        self.resultado_detalhes = []
+        self.resultado_erros = []
+
+        self.text_detalhes.configure(state=tk.NORMAL)
+        self.text_detalhes.delete("1.0", tk.END)
+        self.text_detalhes.configure(state=tk.DISABLED)
+
+        self.text_erros.configure(state=tk.NORMAL)
+        self.text_erros.delete("1.0", tk.END)
+        self.text_erros.configure(state=tk.DISABLED)
+
+        self.notebook_logs.tab(2, text="Erros (0)")
+        self._atualizar_resumo()
+
+    def _mostrar_aba_logs(self):
+        """Muda para a aba de Logs."""
+        self.notebook_principal.select(1)
+
+    def _mostrar_erros(self):
+        """Seleciona a sub-aba de erros."""
+        self.notebook_logs.select(2)
 
     # ----------------------------------------------------------
     # Helpers UI
@@ -431,6 +686,7 @@ class ImportadorApp:
     def _log_detalhe(self, msg):
         """Adiciona mensagem na aba Detalhes."""
         self.resultado_detalhes.append(msg)
+
         def _append():
             self.text_detalhes.configure(state=tk.NORMAL)
             self.text_detalhes.insert(tk.END, msg + "\n")
@@ -450,47 +706,37 @@ class ImportadorApp:
             self.text_erros.insert(tk.END, f"  {mensagem}\n\n")
             self.text_erros.see(tk.END)
             self.text_erros.configure(state=tk.DISABLED)
-
-            # Atualiza contador na aba
-            self.notebook.tab(2, text=f"Erros ({len(self.resultado_erros)})")
+            self.notebook_logs.tab(2, text=f"Erros ({len(self.resultado_erros)})")
         self.root.after(0, _append)
 
     def _log(self, msg):
         """Callback de log - roteia para detalhes e detecta erros."""
-        # Log para detalhes
         self._log_detalhe(msg)
 
-        # Detecta erros e extrai informacoes
         if "ERRO" in msg and "|" in msg:
-            # Formato: ERRO ABA | DB=xxx | linha N PK=[xxx]: mensagem
             try:
+                import re
                 partes = msg.split("|")
                 aba = partes[0].replace("ERRO", "").strip()
 
-                # Extrair linha e PK
+                linha = "?"
+                pk = "?"
                 for p in partes:
                     if "linha" in p:
-                        import re
                         match_linha = re.search(r'linha\s+(\d+)', p)
                         match_pk = re.search(r'PK=\[(.*?)\]', p)
                         linha = match_linha.group(1) if match_linha else "?"
                         pk = match_pk.group(1) if match_pk else "?"
 
-                # Mensagem e o que vem depois do ultimo :
-                if ":" in msg:
-                    mensagem = msg.split(":")[-1].strip()
-                else:
-                    mensagem = msg
-
+                mensagem = msg.split(":")[-1].strip() if ":" in msg else msg
                 self._log_erro(aba, linha, pk, mensagem)
             except Exception:
-                # Se nao conseguir parsear, adiciona como erro generico
                 self._log_erro("?", "?", "?", msg)
 
     def _progresso(self, value, message):
         def _update():
             self.progress_var.set(value)
-            self.status_var.set(message[:50])  # Trunca mensagem longa
+            self.status_var.set(message[:50])
             self.root.update_idletasks()
         self.root.after(0, _update)
 
@@ -503,27 +749,6 @@ class ImportadorApp:
                 except Exception:
                     pass
             self._set_widgets(child, state)
-
-    def _limpar_resultados(self):
-        """Limpa os resultados anteriores."""
-        self.resultado_resumo = {}
-        self.resultado_detalhes = []
-        self.resultado_erros = []
-
-        # Limpar textos
-        self.text_detalhes.configure(state=tk.NORMAL)
-        self.text_detalhes.delete("1.0", tk.END)
-        self.text_detalhes.configure(state=tk.DISABLED)
-
-        self.text_erros.configure(state=tk.NORMAL)
-        self.text_erros.delete("1.0", tk.END)
-        self.text_erros.configure(state=tk.DISABLED)
-
-        # Reset contador erros
-        self.notebook.tab(2, text="Erros (0)")
-
-        # Limpar resumo
-        self._atualizar_resumo()
 
     # ----------------------------------------------------------
     # Importacao
@@ -564,8 +789,9 @@ class ImportadorApp:
                 return
             self.odbc_driver = driver
 
-        # Limpar resultados anteriores
-        self._limpar_resultados()
+        # Limpar logs e ir para aba de logs
+        self._limpar_logs()
+        self._mostrar_aba_logs()
         self._log_detalhe(f"Driver ODBC: {self.odbc_driver}")
 
         self._set_widgets(self.root, "disabled")
@@ -575,7 +801,7 @@ class ImportadorApp:
 
     def _executar(self, arquivo, abas):
         try:
-            # Pre-validacao
+            # Pre-validacao (se marcada)
             if self.validar_antes.get():
                 self._progresso(0, "Validando planilha...")
                 self._log_detalhe("=== PRE-VALIDACAO ===")
@@ -584,41 +810,81 @@ class ImportadorApp:
                 validator.versao_srppwin = self.versao_srppwin.get()
                 excel_data, nome_arquivo, status, resultados = validator.processar("Validacao Local")
 
+                # Determinar onde salvar com base na opcao do usuario
+                criar_novo = self.criar_novo_arquivo.get()
+                pasta_planilha = os.path.dirname(arquivo)
+
+                if criar_novo:
+                    output_path = os.path.join(pasta_planilha, nome_arquivo)
+                else:
+                    output_path = arquivo
+
+                # Salvar planilha validada
+                with open(output_path, "wb") as f:
+                    f.write(excel_data.getbuffer())
+                self._log_detalhe(f"Planilha salva: {output_path}")
+
+                # Verificar se deve gerar planilha de etiquetas
+                gerar_etiq = self.gerar_etiquetas.get()
+                etiquetas_path = None
+                etiquetas_erro = None
+
+                if gerar_etiq:
+                    try:
+                        etiquetas_result = validator.gerar_planilha_etiquetas()
+                        if etiquetas_result:
+                            etiquetas_data, etiquetas_nome = etiquetas_result
+                            etiquetas_path = os.path.join(pasta_planilha, etiquetas_nome)
+                            with open(etiquetas_path, "wb") as f:
+                                f.write(etiquetas_data.getbuffer())
+                            self._log_detalhe(f"Planilha de etiquetas: {etiquetas_path}")
+                    except Exception as e:
+                        etiquetas_erro = str(e)
+                        self._log_detalhe(f"ERRO ao gerar etiquetas: {etiquetas_erro}")
+
+                # Status da validacao
+                status_text = {
+                    "aprovado": "APROVADO",
+                    "advertencias": "APROVADO COM ADVERTENCIAS",
+                    "reprovado": "REPROVADO",
+                }.get(status, "Validacao completa")
+
+                self._log_detalhe(f"Status: {status_text}")
+
+                # Montar mensagem de resultado
+                msg_resultado = f"Validacao concluida: {status_text}\n\n"
+                if criar_novo:
+                    msg_resultado += f"Arquivo salvo em:\n{output_path}"
+                else:
+                    msg_resultado += f"Arquivo atualizado:\n{output_path}"
+
+                if etiquetas_path:
+                    msg_resultado += f"\n\nPlanilha de etiquetas:\n{etiquetas_path}"
+                elif gerar_etiq and etiquetas_erro:
+                    msg_resultado += f"\n\nERRO ao gerar etiquetas:\n{etiquetas_erro}"
+                elif gerar_etiq:
+                    msg_resultado += "\n\nPlanilha de etiquetas NAO gerada: nenhuma linha com QtdeEtiquetas > 0."
+
+                # Se REPROVADO, bloqueia importacao
                 if status == "reprovado":
-                    self._log_detalhe("REPROVADO - Importacao bloqueada!")
-                    for r in resultados:
-                        if r.get("erros", 0) > 0:
-                            self._log_detalhe(f"  {r['Planilha']}: {r['erros']} erros")
-
-                    # Salvar planilha com resultados visuais
-                    pasta = os.path.dirname(arquivo)
-                    output_path = os.path.join(pasta, nome_arquivo)
-                    with open(output_path, "wb") as f:
-                        f.write(excel_data.getbuffer())
-                    self._log_detalhe(f"  Planilha salva: {output_path}")
-
                     self._progresso(0, "Bloqueado - planilha reprovada")
-                    msg_erro = f"A planilha tem erros e a importacao foi bloqueada.\n\nPlanilha salva em:\n{output_path}"
-                    self.root.after(0, lambda: messagebox.showerror(
-                        "Validacao Reprovada", msg_erro))
+                    self.root.after(0, lambda: messagebox.showerror("Validacao Reprovada", msg_resultado))
                     return
 
-                if status == "advertencias":
-                    self._log_detalhe("APROVADO COM ADVERTENCIAS")
-                    resposta = [None]
-                    def _ask():
-                        resposta[0] = messagebox.askyesno(
-                            "Advertencias",
-                            "Planilha aprovada com advertencias.\nContinuar importacao?")
-                    self.root.after(0, _ask)
-                    while resposta[0] is None:
-                        time.sleep(0.1)
-                    if not resposta[0]:
-                        self._log_detalhe("Cancelado pelo usuario.")
-                        self._progresso(0, "Cancelado")
-                        return
-                else:
-                    self._log_detalhe("APROVADO")
+                # SEMPRE perguntar se quer importar apos validacao
+                resposta = [None]
+                def _ask():
+                    resposta[0] = messagebox.askyesno(
+                        "Validacao Concluida",
+                        msg_resultado + "\n\nDeseja importar os dados agora?")
+                self.root.after(0, _ask)
+                while resposta[0] is None:
+                    time.sleep(0.1)
+
+                if not resposta[0]:
+                    self._log_detalhe("Importacao cancelada pelo usuario.")
+                    self._progresso(100, "Validacao concluida - importacao cancelada")
+                    return
 
             # Importar
             self._log_detalhe("")
@@ -655,17 +921,19 @@ class ImportadorApp:
             self._log_detalhe(f"Total: {total_s} importados, {total_e} erros")
 
             # Atualizar resumo visual
-            self.root.after(0, self._atualizar_resumo)
+            def _update_resumo():
+                self._atualizar_resumo()
+                if total_e > 0:
+                    self._mostrar_erros()
+            self.root.after(0, _update_resumo)
 
             if total_e == 0:
                 self.root.after(0, lambda: messagebox.showinfo(
                     "Concluido", f"Importacao concluida!\n{total_s} registros importados."))
             else:
-                # Muda para aba de erros
-                self.root.after(0, lambda: self.notebook.select(2))
                 self.root.after(0, lambda: messagebox.showwarning(
                     "Concluido com Erros",
-                    f"{total_s} importados, {total_e} erros.\nVeja a aba 'Erros'."))
+                    f"{total_s} importados, {total_e} erros.\nVeja a janela de Resultado."))
 
         except Exception as e:
             self._log_detalhe(f"ERRO FATAL: {e}")
