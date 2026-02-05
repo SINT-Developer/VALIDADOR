@@ -825,7 +825,7 @@ class PlanilhaImportador:
                     elif col_name == "CEP" and valor:
                         valor = self._formatar_cep(valor)
                     # CodRepresentante e CodTransportadora: 0 -> NULL
-                    if col_name in ("CodRepresentante", "CodTransportadora") and valor == 0:
+                    if col_name in ("CodRepresentante", "CodTransportadora", "DDD") and valor == 0:
                         valor = None
                 else:
                     valor = None
