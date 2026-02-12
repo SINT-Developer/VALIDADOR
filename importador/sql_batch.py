@@ -961,6 +961,39 @@ BEGIN
       AND NOT EXISTS (SELECT 1 FROM Transportadora t WHERE t.codtransportadora = w.codtransportadora)
       AND w.erro IS NULL
 
+    -- 8. CNPJCPF formato (deve ser NNN.NNN.NNN/NNNN-NN com 19 chars, ou NULL)
+    -- Corrige para NULL se formato invalido (evita CHECK constraint CNPJCPFNull_)
+    UPDATE #W SET cnpjcpf = NULL
+    WHERE cnpjcpf IS NOT NULL
+      AND (LEN(cnpjcpf) != 19
+           OR cnpjcpf NOT LIKE '[0-9][0-9][0-9].[0-9][0-9][0-9].[0-9][0-9][0-9]/[0-9][0-9][0-9][0-9]-[0-9][0-9]')
+      AND erro IS NULL
+
+    -- 9. CEP formato (deve ser NNNNN-NNN com 9 chars, ou NULL)
+    UPDATE #W SET cep = NULL
+    WHERE cep IS NOT NULL
+      AND (LEN(cep) != 9
+           OR cep NOT LIKE '[0-9][0-9][0-9][0-9][0-9]-[0-9][0-9][0-9]')
+      AND erro IS NULL
+
+    -- 10. UF valida (2 chars, sigla de estado brasileira, ou NULL)
+    UPDATE #W SET uf = NULL
+    WHERE uf IS NOT NULL
+      AND UPPER(LTRIM(RTRIM(uf))) NOT IN (
+          'AC','AL','AM','AP','BA','CE','DF','ES','EX','GO','MA','MG','MS','MT',
+          'PA','PB','PE','PI','PR','RJ','RN','RO','RR','RS','SC','SE','SP','TO')
+      AND erro IS NULL
+
+    -- 11. DDD range (deve ser > 0 ou NULL)
+    UPDATE #W SET ddd = NULL
+    WHERE ddd IS NOT NULL AND ddd <= 0
+      AND erro IS NULL
+
+    -- 12. CodRepresentante range (deve ser > 0 ou NULL)
+    UPDATE #W SET codrepresentante = NULL
+    WHERE codrepresentante IS NOT NULL AND codrepresentante <= 0
+      AND erro IS NULL
+
     -- ============================================================
     -- IMPORTACAO
     -- ============================================================

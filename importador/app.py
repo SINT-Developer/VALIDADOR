@@ -17,18 +17,27 @@ import subprocess
 import ssl
 
 # Paths
-script_dir = os.path.dirname(os.path.abspath(__file__))
+if getattr(sys, "frozen", False):
+    # Rodando no EXE (PyInstaller)
+    script_dir = sys._MEIPASS
+else:
+    # Rodando em Python normal
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+
 parent_dir = os.path.dirname(script_dir)
+
 if script_dir not in sys.path:
     sys.path.insert(0, script_dir)
+
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
+
 
 from motor import PlanilhaImportador
 from mapeamento import ORDEM_IMPORTACAO
 from planilha_validator import PlanilhaValidator
 
-APP_VERSION = "1.2.4"
+APP_VERSION = "1.2.15"
 VERSION_URL = "https://gist.githubusercontent.com/SINT-Developer/4005d983a51756ce108aef5f064f6c01/raw/importador_version.json"
 
 
@@ -451,11 +460,28 @@ class ImportadorApp:
         self.notebook_logs.add(self.frame_detalhes, text="Detalhes")
         self.frame_detalhes.columnconfigure(0, weight=1)
         self.frame_detalhes.rowconfigure(0, weight=1)
-        self.text_detalhes = tk.Text(self.frame_detalhes, font=("Consolas", 10), state=tk.DISABLED, wrap=tk.WORD)
+        self.text_detalhes = tk.Text(self.frame_detalhes, font=("Consolas", 10), state=tk.DISABLED,
+                                      wrap=tk.WORD, bg="#1E1E1E", fg="#D4D4D4",
+                                      selectbackground="#264F78", insertbackground="#D4D4D4")
         sb_det = ttk.Scrollbar(self.frame_detalhes, orient=tk.VERTICAL, command=self.text_detalhes.yview)
         self.text_detalhes.configure(yscrollcommand=sb_det.set)
         self.text_detalhes.grid(row=0, column=0, sticky=tk.NSEW)
         sb_det.grid(row=0, column=1, sticky=tk.NS)
+
+        # Tags visuais para o log de detalhes
+        self.text_detalhes.tag_configure("major_header", foreground="#CE9178", font=("Consolas", 12, "bold"),
+                                          spacing1=8, spacing3=4)
+        self.text_detalhes.tag_configure("header", foreground="#569CD6", font=("Consolas", 11, "bold"),
+                                          spacing1=6, spacing3=2)
+        self.text_detalhes.tag_configure("success", foreground="#4EC9B0", spacing1=1)
+        self.text_detalhes.tag_configure("error", foreground="#F44747", font=("Consolas", 10, "bold"), spacing1=1)
+        self.text_detalhes.tag_configure("result", foreground="#DCDCAA", font=("Consolas", 10, "bold"),
+                                          spacing1=4, spacing3=2)
+        self.text_detalhes.tag_configure("final", foreground="#4FC1FF", font=("Consolas", 11, "bold"),
+                                          spacing1=8)
+        self.text_detalhes.tag_configure("step", foreground="#C586C0", spacing1=4)
+        self.text_detalhes.tag_configure("debug", foreground="#808080", spacing1=1)
+        self.text_detalhes.tag_configure("info", foreground="#D4D4D4", spacing1=1)
 
         # Sub-aba Erros
         self.frame_erros = ttk.Frame(self.notebook_logs)
@@ -584,8 +610,9 @@ class ImportadorApp:
         self._atualizar_resumo()
 
     def _mostrar_aba_logs(self):
-        """Muda para a aba de Logs."""
+        """Muda para a aba de Logs e sub-aba Detalhes."""
         self.notebook_principal.select(1)
+        self.notebook_logs.select(1)
 
     def _mostrar_erros(self):
         """Seleciona a sub-aba de erros."""
@@ -684,12 +711,35 @@ class ImportadorApp:
             self.status_var.set("Falha na conexao")
 
     def _log_detalhe(self, msg):
-        """Adiciona mensagem na aba Detalhes."""
+        """Adiciona mensagem na aba Detalhes com formatacao visual."""
         self.resultado_detalhes.append(msg)
+
+        # Determinar tag baseado no conteudo
+        tag = "info"
+        stripped = msg.strip()
+        if msg.startswith("==="):
+            tag = "major_header"
+        elif msg.startswith("---"):
+            tag = "header"
+        elif "ERRO" in msg:
+            tag = "error"
+        elif "DEBUG" in msg:
+            tag = "debug"
+        elif stripped.startswith("Total:"):
+            tag = "final"
+        elif stripped.startswith(("EMPRESA:", "FILIAL:", "REPR:", "PAGTO:", "TRANSP:",
+                                  "ESTADOS:", "FAMILIAS:", "ESTILOS:", "CLIENTES:",
+                                  "PAGTOFILIAL:", "PRODUTOS:", "Tempo total:")):
+            tag = "result"
+        elif stripped.startswith(("Fazendo backup", "Limpando tabelas", "Executando ",
+                                  "Conectado ao", "Planilha:", "Todos os dados")):
+            tag = "step"
+        elif "OK:" in msg or "ok," in msg:
+            tag = "success"
 
         def _append():
             self.text_detalhes.configure(state=tk.NORMAL)
-            self.text_detalhes.insert(tk.END, msg + "\n")
+            self.text_detalhes.insert(tk.END, msg + "\n", tag)
             self.text_detalhes.see(tk.END)
             self.text_detalhes.configure(state=tk.DISABLED)
         self.root.after(0, _append)

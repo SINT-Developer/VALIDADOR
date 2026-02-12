@@ -98,9 +98,36 @@ class PlanilhaImportador:
     # ----------------------------------------------------------
 
     def _converter_valor(self, valor, tipo_sql):
-        """Converte valor da celula Excel para tipo SQL."""
+        """Converte valor da celula Excel para tipo SQL.
+        Retorna tipos Python consistentes para evitar erro 22018 no fast_executemany:
+        - int/smallint/tinyint -> int ou None
+        - decimal -> float ou None
+        - datetime -> datetime object ou None (nao string!)
+        - varchar/char -> str ou None
+        """
         if valor is None:
             return None
+
+        # datetime: preservar objeto datetime do openpyxl (nao converter pra string!)
+        if tipo_sql == "datetime":
+            from datetime import datetime as dt
+            if isinstance(valor, dt):
+                return valor
+            # Se for string, tentar parsear
+            val_str = str(valor).strip()
+            if val_str == "":
+                return None
+            try:
+                # Tentar formatos comuns
+                for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d", "%d/%m/%Y", "%d/%m/%Y %H:%M:%S"):
+                    try:
+                        return dt.strptime(val_str, fmt)
+                    except ValueError:
+                        continue
+                return None  # Formato desconhecido -> NULL
+            except Exception:
+                return None
+
         val_str = str(valor).strip()
         if val_str == "":
             return None
@@ -109,21 +136,29 @@ class PlanilhaImportador:
                 return int(float(val_str))
             elif tipo_sql == "decimal":
                 return float(val_str.replace(",", "."))
-            elif tipo_sql == "datetime":
-                return val_str
             else:
                 return val_str
         except (ValueError, TypeError):
+            # Tipo numerico que nao pode ser convertido -> NULL
+            # (evita erro 22018 no bulk insert para staging)
+            if tipo_sql in ("int", "smallint", "tinyint", "decimal"):
+                return None
             return val_str
 
     def _formatar_cnpjcpf(self, valor):
         """Formata CNPJ para formato SRPP (NNN.NNN.NNN/NNNN-NN, 19 chars).
-        CPF nao e suportado pelo banco (constraint aceita apenas CNPJ ou NULL).
+        CPF (11 digitos) e convertido para formato CNPJ com zeros a esquerda.
+        Retorna NULL se nao houver digitos suficientes (minimo 11 para CPF).
         """
         if valor is None:
             return None
         val = str(valor).strip()
         if not val:
+            return None
+        # Extrair digitos para validacao
+        digitos = ''.join(c for c in val if c.isdigit())
+        # Se nao tem pelo menos 11 digitos, retorna NULL (invalido)
+        if len(digitos) < 11:
             return None
         # Ja formatado 19 chars (formato SRPP)
         if len(val) == 19 and '/' in val:
@@ -131,8 +166,6 @@ class PlanilhaImportador:
         # Formatado padrao brasileiro 18 chars -> pad para 19
         if len(val) == 18 and '/' in val:
             return '0' + val
-        # Extrair apenas digitos
-        digitos = ''.join(c for c in val if c.isdigit())
         # CNPJ 14 digitos -> formatar para SRPP
         if len(digitos) == 14:
             d = digitos.zfill(15)
@@ -142,29 +175,482 @@ class PlanilhaImportador:
             digitos = digitos.zfill(14)
             d = digitos.zfill(15)
             return f"{d[0:3]}.{d[3:6]}.{d[6:9]}/{d[9:13]}-{d[13:15]}"
-        # Nao e CNPJ/CPF reconhecido, retorna como veio
-        return val
+        # 12 ou 13 digitos - pad para 14 e formatar
+        if len(digitos) in (12, 13):
+            digitos = digitos.zfill(14)
+            d = digitos.zfill(15)
+            return f"{d[0:3]}.{d[3:6]}.{d[6:9]}/{d[9:13]}-{d[13:15]}"
+        # Mais de 14 digitos - pegar os ultimos 14 e formatar
+        if len(digitos) > 14:
+            digitos = digitos[-14:]
+            d = digitos.zfill(15)
+            return f"{d[0:3]}.{d[3:6]}.{d[6:9]}/{d[9:13]}-{d[13:15]}"
+        # Fallback: retorna NULL para evitar erro de constraint
+        return None
 
     # Campos onde valor 0 deve ser convertido para NULL (constraint > 0 OR NULL)
     _ZERO_TO_NULL = {"@ddd", "@codtransportadora", "@codrepresentante", "@qtdetabela1", "@qtdetabela2", "@qtdetabela3", "@codfamilia", "@codestilo", "@qtdemultipla", "@qtdeminima", "@qtdeetiquetas"}
 
+    # ==================== CONSTRAINTS CHECK DO BANCO ====================
+    # Mapeamento das constraints CHECK para validacao pre-batch
+    # Tipos de constraint:
+    #   "maior_que_zero": valor > 0 (obrigatorio)
+    #   "maior_que_zero_ou_null": valor > 0 OU NULL (corrigivel -> NULL)
+    #   "maior_igual_zero": valor >= 0 (obrigatorio)
+    #   "maior_igual_zero_ou_null": valor >= 0 OU NULL
+    #   "nao_vazio": string nao vazia (obrigatorio)
+    #   "nao_vazio_ou_null": string nao vazia OU NULL (corrigivel -> NULL)
+    #   "formato_cnpjcpf": formato NNN.NNN.NNN/NNNN-NN ou NULL (corrigivel -> NULL)
+    #   "formato_cep": formato NNNNN-NNN ou NULL (corrigivel -> NULL)
+    #   "uf_valida": sigla de estado valida ou NULL
+    #   "sim_nao": 'S' ou 'N' ou NULL
+
+    _UFS_VALIDAS = {'AC', 'AL', 'AM', 'AP', 'BA', 'CE', 'DF', 'ES', 'EX', 'GO', 'MA', 'MG', 'MS', 'MT', 'PA', 'PB', 'PE', 'PI', 'PR', 'RJ', 'RN', 'RO', 'RR', 'RS', 'SC', 'SE', 'SP', 'TO'}
+
+    _CONSTRAINTS_TRANSPORTADORA = {
+        "CodTransportadora": "maior_que_zero",
+        "Transportadora": "nao_vazio",
+    }
+
+    _CONSTRAINTS_CLIENTE = {
+        "CodCliente": "maior_que_zero",
+        "NomeFantasia": "nao_vazio",
+        "CNPJCPF": "formato_cnpjcpf",
+        "CEP": "formato_cep",
+        "CodRepresentante": "maior_que_zero_ou_null",
+        "DDD": "maior_que_zero_ou_null",
+        "UF": "uf_valida",
+        "Bairro": "nao_vazio_ou_null",
+        "Cidade": "nao_vazio_ou_null",
+        "EMail": "nao_vazio_ou_null",
+        "FAX": "nao_vazio_ou_null",
+        "IERG": "nao_vazio_ou_null",
+        "Logradouro": "nao_vazio_ou_null",
+        "NomeContato": "nao_vazio_ou_null",
+        "Observacao": "nao_vazio_ou_null",
+        "RazaoSocial": "nao_vazio_ou_null",
+        "Telefone1": "nao_vazio_ou_null",
+        "Telefone2": "nao_vazio_ou_null",
+    }
+
+    _CONSTRAINTS_PRODUTO = {
+        "CodProduto": "nao_vazio",
+        "Produto": "nao_vazio",
+        "PrecoTabela1": "maior_igual_zero",
+        "CodAuxiliarProduto": "nao_vazio_ou_null",
+        "PathFotografia": "nao_vazio_ou_null",
+        "PrecoTabela2": "maior_igual_zero_ou_null",
+        "PrecoTabela3": "maior_igual_zero_ou_null",
+        "AliquotaIPI": "maior_igual_zero_ou_null",
+        "DescontoGrade": "maior_igual_zero_ou_null",
+        "LimiteDescIndividual": "maior_igual_zero_ou_null",
+        "MultiploGrade": "maior_igual_zero_ou_null",
+        "QtdeEstoqueAtual": "maior_igual_zero_ou_null",
+        "QtdeEstoqueFuturo": "maior_igual_zero_ou_null",
+        "QtdeMinima": "maior_igual_zero_ou_null",
+        "QtdeMultipla": "maior_igual_zero_ou_null",
+        "QtdeTabela1": "maior_igual_zero_ou_null",
+        "QtdeTabela2": "maior_igual_zero_ou_null",
+        "QtdeTabela3": "maior_igual_zero_ou_null",
+    }
+
+    # Tamanhos maximos de campos varchar/char (baseado na estrutura REAL do banco SRPP)
+    # Formato: "NomeColunaExcel": tamanho_maximo
+    _MAX_LENGTHS = {
+    # FILIAL
+    "Filial": 40,
+    "TituloAdicional1": 70,
+    "TituloAdicional2": 70,
+    "Logotipo": 50,
+
+    # REPRESENTANTE
+    "Representante": 20,
+
+    # CONDIÇÃO DE PAGAMENTO
+    "CondPagamento": 20,
+    "TipoCondPagamento": 1,
+    "CondPagamentoPadrao": 1,
+    "VlrMinimoComEstAtual": 1,
+    "VlrMinimoComEstFuturo": 1,
+    "VlrMinimoComEstEsgotado": 1,
+
+    # CONDIÇÃO DE PAGAMENTO FILIAL
+    # (se futuramente tiver campos específicos, entram aqui)
+
+    # TRANSPORTADORA
+    "Transportadora": 20,
+    "TransportadoraPadrao": 1,
+
+    # ESTADOS
+    "SiglaEstado": 2,
+    "NomeEstado": 20,
+
+    # CLIENTES
+    "NomeFantasia": 20,
+    "RazaoSocial": 40,
+    
+    "IERG": 19,
+    "Logradouro": 40,
+    "Bairro": 20,
+    "Cidade": 20,
+    "UF": 2,
+    "CEP": 9,
+    "Telefone1": 9,
+    "Telefone2": 9,
+    "FAX": 9,
+    "NomeContato": 40,
+    "NomeTransportadora": 20,
+    "Observacao": 20,
+    "EMail": 40,
+
+    # FAMÍLIA
+    "Familia": 45,
+
+    # ESTILOS
+    "Estilo": 45,
+
+    # PRODUTOS
+    "CodProduto": 20,
+    "CodAuxiliarProduto": 20,
+    "Produto": 40,
+    "PathFotografia": 60,
+    "PrecoPromocional": 1,
+    "TipoVendaSemEstoque": 1,
+}
+
+    # ==================== FUNCOES DE PRE-VALIDACAO ====================
+
+    def _validar_cnpjcpf_formato(self, valor):
+        """
+        Valida se CNPJCPF pode ser convertido para formato SRPP valido.
+        Retorna (valido, valor_corrigido_ou_none, mensagem_erro).
+        """
+        if valor is None:
+            return True, None, None
+        val = str(valor).strip()
+        if not val:
+            return True, None, None
+
+        # Extrair apenas digitos
+        digitos = ''.join(c for c in val if c.isdigit())
+
+        # Precisa de pelo menos 11 digitos (CPF) para ser valido
+        if len(digitos) < 11:
+            return False, None, f"CNPJCPF '{val}' invalido (apenas {len(digitos)} digitos, minimo 11)"
+
+        return True, valor, None
+
+    def _validar_cep_formato(self, valor):
+        """
+        Valida se CEP pode ser convertido para formato SRPP valido.
+        Aceita CEPs com 5-8 digitos (faz pad com zeros a esquerda).
+        Retorna (valido, valor_corrigido_ou_none, mensagem_erro).
+        """
+        if valor is None:
+            return True, None, None
+        val = str(valor).strip()
+        if not val:
+            return True, None, None
+
+        digitos = ''.join(c for c in val if c.isdigit())
+        # CEP precisa ter pelo menos 5 digitos para ser valido (ex: 01310 -> 01310-000)
+        # Se tiver apenas 1-4 digitos ou for "0", provavelmente nao e CEP valido
+        if len(digitos) < 5 or (len(digitos) == 1 and digitos == "0"):
+            return False, None, f"CEP '{val}' invalido (apenas {len(digitos)} digitos, minimo 5)"
+
+        return True, valor, None
+
+    def _validar_constraint(self, valor, tipo_constraint, col_name):
+        """
+        Valida um valor contra um tipo de constraint.
+        Retorna (valido, valor_corrigido, mensagem_erro, corrigivel).
+        - valido: True se passou na validacao
+        - valor_corrigido: valor ajustado (ou None se invalido e corrigivel)
+        - mensagem_erro: descricao do problema se invalido
+        - corrigivel: True se o valor pode ser automaticamente corrigido para NULL
+        """
+        # Normalizar valor
+        if isinstance(valor, str):
+            valor = valor.strip()
+            if valor == "":
+                valor = None
+
+        if tipo_constraint == "maior_que_zero":
+            # Obrigatorio: valor > 0
+            if valor is None:
+                return False, None, f"{col_name} e obrigatorio (> 0)", False
+            try:
+                num = float(valor) if isinstance(valor, str) else valor
+                if num <= 0:
+                    return False, None, f"{col_name}={valor} deve ser > 0", False
+            except (ValueError, TypeError):
+                return False, None, f"{col_name}='{valor}' nao e numero valido", False
+            return True, valor, None, False
+
+        elif tipo_constraint == "maior_que_zero_ou_null":
+            # Corrigivel: valor > 0 OU NULL
+            if valor is None:
+                return True, None, None, False
+            try:
+                num = float(valor) if isinstance(valor, str) else valor
+                if num <= 0:
+                    return False, None, f"{col_name}={valor} deve ser > 0 ou vazio (sera NULL)", True
+            except (ValueError, TypeError):
+                # Tentar extrair apenas digitos (ex: "(55)" -> 55)
+                if isinstance(valor, str):
+                    digitos = ''.join(c for c in valor if c.isdigit())
+                    if digitos:
+                        try:
+                            num = int(digitos)
+                            if num > 0:
+                                return True, num, None, False  # Retorna valor corrigido
+                        except ValueError:
+                            pass
+                return False, None, f"{col_name}='{valor}' nao e numero valido", True
+            return True, valor, None, False
+
+        elif tipo_constraint == "maior_igual_zero":
+            # Obrigatorio: valor >= 0
+            if valor is None:
+                return False, None, f"{col_name} e obrigatorio (>= 0)", False
+            try:
+                num = float(valor) if isinstance(valor, str) else valor
+                if num < 0:
+                    return False, None, f"{col_name}={valor} deve ser >= 0", False
+            except (ValueError, TypeError):
+                return False, None, f"{col_name}='{valor}' nao e numero valido", False
+            return True, valor, None, False
+
+        elif tipo_constraint == "maior_igual_zero_ou_null":
+            # Corrigivel: valor >= 0 OU NULL
+            if valor is None:
+                return True, None, None, False
+            try:
+                num = float(valor) if isinstance(valor, str) else valor
+                if num < 0:
+                    return False, None, f"{col_name}={valor} deve ser >= 0 ou vazio", True
+            except (ValueError, TypeError):
+                return False, None, f"{col_name}='{valor}' nao e numero valido", True
+            return True, valor, None, False
+
+        elif tipo_constraint == "nao_vazio":
+            # Obrigatorio: string nao vazia
+            if valor is None or (isinstance(valor, str) and valor.strip() == ""):
+                return False, None, f"{col_name} e obrigatorio (nao pode ser vazio)", False
+            return True, valor, None, False
+
+        elif tipo_constraint == "nao_vazio_ou_null":
+            # Corrigivel: string nao vazia OU NULL
+            if valor is None:
+                return True, None, None, False
+            if isinstance(valor, str) and valor.strip() == "":
+                return True, None, None, False  # Vazio -> NULL, OK
+            return True, valor, None, False
+
+        elif tipo_constraint == "formato_cnpjcpf":
+            valido, corrigido, msg = self._validar_cnpjcpf_formato(valor)
+            return valido, corrigido if valido else None, msg, True  # Corrigivel -> NULL
+
+        elif tipo_constraint == "formato_cep":
+            valido, corrigido, msg = self._validar_cep_formato(valor)
+            return valido, corrigido if valido else None, msg, True  # Corrigivel -> NULL
+
+        elif tipo_constraint == "uf_valida":
+            if valor is None:
+                return True, None, None, False
+            val_upper = str(valor).strip().upper()
+            if val_upper == "":
+                return True, None, None, False
+            if val_upper not in self._UFS_VALIDAS:
+                return False, None, f"UF '{valor}' invalida (validas: AC,AL,AM,...,TO)", True
+            return True, val_upper, None, False
+
+        elif tipo_constraint == "sim_nao":
+            if valor is None:
+                return True, None, None, False
+            val_upper = str(valor).strip().upper()
+            if val_upper == "":
+                return True, None, None, False
+            if val_upper not in ('S', 'N'):
+                return False, None, f"{col_name}='{valor}' deve ser 'S' ou 'N'", True
+            return True, val_upper, None, False
+
+        # Constraint desconhecida - passar
+        return True, valor, None, False
+
+    def _validar_batch_pre_importacao(self, nome_aba, linhas, header_map, constraints, pk_col):
+        """
+        Valida todas as linhas antes do batch insert.
+        Retorna (erros_bloqueantes, avisos, correcoes).
+        - erros_bloqueantes: lista de (linha_excel, pk, col, msg) - impedem importacao
+        - avisos: lista de (linha_excel, pk, col, msg, valor_original) - serao corrigidos para NULL
+        - correcoes: dict {(linha_idx, col_name): None} - valores a serem corrigidos
+        """
+        erros_bloqueantes = []
+        avisos = []
+        correcoes = {}
+
+        pk_idx = header_map.get(pk_col)
+
+        for linha_idx, row in enumerate(linhas):
+            # Linha na planilha (considerando header na linha 1)
+            linha_excel = linha_idx + 2
+
+            # Obter PK para identificacao
+            pk_val = row[pk_idx] if pk_idx is not None and pk_idx < len(row) else "?"
+
+            for col_name, tipo_constraint in constraints.items():
+                col_idx = header_map.get(col_name)
+                if col_idx is None:
+                    # Coluna nao existe na planilha
+                    # Se for obrigatoria (nao_vazio ou maior_que_zero), reportar
+                    if tipo_constraint in ("nao_vazio", "maior_que_zero", "maior_igual_zero"):
+                        # Verificar se e a PK (que ja foi validada antes)
+                        if col_name != pk_col:
+                            erros_bloqueantes.append((linha_excel, pk_val, col_name, f"Coluna '{col_name}' nao encontrada na planilha"))
+                    continue
+
+                valor = row[col_idx] if col_idx < len(row) else None
+
+                valido, valor_corrigido, msg, corrigivel = self._validar_constraint(valor, tipo_constraint, col_name)
+
+                if not valido:
+                    if corrigivel:
+                        # Valor invalido mas corrigivel -> sera NULL
+                        avisos.append((linha_excel, pk_val, col_name, msg, valor))
+                        correcoes[(linha_idx, col_name)] = None
+                    else:
+                        # Erro bloqueante
+                        erros_bloqueantes.append((linha_excel, pk_val, col_name, msg))
+
+        return erros_bloqueantes, avisos, correcoes
+
+    def _truncar_valor(self, valor, col_name):
+        """Trunca string se exceder o tamanho maximo definido para a coluna."""
+        if valor is None:
+            return None
+        if not isinstance(valor, str):
+            return valor
+        max_len = self._MAX_LENGTHS.get(col_name)
+        if max_len and len(valor) > max_len:
+            return valor[:max_len]
+        return valor
+
     def _formatar_cep(self, valor):
-        """Formata CEP para formato SRPP (NNNNN-NNN, 9 chars) ou None."""
+        """
+        Formata CEP para formato SRPP (NNNNN-NNN, 9 chars) ou None.
+        Aceita CEPs com 5-8 digitos (faz pad com zeros a esquerda).
+        Retorna NULL se nao puder produzir formato valido.
+        """
         if valor is None:
             return None
         val = str(valor).strip()
         if not val:
             return None
-        # Ja formatado 9 chars (NNNNN-NNN)
+        # Ja formatado 9 chars (NNNNN-NNN) - validar se e apenas digitos e hifen
         if len(val) == 9 and val[5] == '-':
-            return val
+            # Verificar se os outros caracteres sao digitos
+            parte1 = val[0:5]
+            parte2 = val[6:9]
+            if parte1.isdigit() and parte2.isdigit():
+                return val
+            # Formato correto mas caracteres invalidos -> NULL
+            return None
         # Extrair apenas digitos
         digitos = ''.join(c for c in val if c.isdigit())
-        if not digitos:
+        # Se nao tem digitos ou so tem "0", retorna NULL
+        if not digitos or (len(digitos) == 1 and digitos == "0"):
+            return None
+        # CEP precisa ter entre 5 e 8 digitos para ser valido
+        # Menos de 5: nao e CEP valido -> NULL
+        if len(digitos) < 5:
+            return None
+        # Mais de 8: provavelmente nao e CEP (pode ser telefone, CNPJ, etc) -> NULL
+        if len(digitos) > 8:
             return None
         # Pad para 8 digitos e formatar
         digitos = digitos.zfill(8)
         return f"{digitos[0:5]}-{digitos[5:8]}"
+
+    def _bulk_insert_staging(self, sql_insert, batch_rows, col_names, pk_col_name="?",
+                              staging_table=None, col_types=None):
+        """
+        Tenta bulk insert (fast_executemany). Se falhar, faz fallback row-by-row
+        para identificar exatamente quais linhas/colunas tem dados invalidos.
+        Retorna (linhas_inseridas, linhas_com_erro).
+        staging_table: nome da staging table para limpar antes do fallback (evita duplicacao).
+        col_types: lista de tipos SQL (ex: ["varchar","int","decimal","datetime"]) para setinputsizes.
+        """
+        import pyodbc as _pyodbc
+        cursor = self.conn.cursor()
+        if self._fast_executemany_ok:
+            cursor.fast_executemany = True
+
+            # Definir tipos explicitamente para evitar erro 22018
+            # (fast_executemany infere tipos pela primeira linha, que pode ter None)
+            if col_types:
+                _type_map = {
+                    "datetime": (_pyodbc.SQL_TYPE_TIMESTAMP, 23, 3),
+                    "decimal":  (_pyodbc.SQL_DECIMAL, 8, 2),
+                    "int":      (_pyodbc.SQL_INTEGER, 0, 0),
+                    "smallint": (_pyodbc.SQL_SMALLINT, 0, 0),
+                    "tinyint":  (_pyodbc.SQL_TINYINT, 0, 0),
+                    "char":     (_pyodbc.SQL_VARCHAR, 10, 0),  # VARCHAR para evitar truncation em char(2+)
+                    "varchar":  (_pyodbc.SQL_VARCHAR, 200, 0),
+                }
+                input_sizes = [_type_map.get(t, (_pyodbc.SQL_VARCHAR, 200, 0)) for t in col_types]
+                cursor.setinputsizes(input_sizes)
+
+        try:
+            cursor.executemany(sql_insert, batch_rows)
+            cursor.close()
+            return len(batch_rows), 0
+        except Exception as bulk_err:
+            cursor.close()
+            self._log(f"  Bulk insert falhou: {bulk_err}")
+
+            # IMPORTANTE: limpar staging antes do fallback!
+            # O executemany pode ter inserido dados parciais antes de falhar,
+            # e o fallback vai reinserir tudo, causando duplicacao.
+            if staging_table:
+                self._log(f"  Limpando staging ({staging_table}) antes do fallback...")
+                c = self.conn.cursor()
+                try:
+                    c.execute(f"TRUNCATE TABLE {staging_table}")
+                    c.execute(f"DBCC CHECKIDENT ('{staging_table}', RESEED, 0)")
+                    while c.nextset():
+                        pass
+                finally:
+                    c.close()
+
+            self._log(f"  Fazendo fallback row-by-row para identificar linhas com problema...")
+
+            inseridos = 0
+            erros = 0
+            pk_idx = col_names.index(pk_col_name) if pk_col_name in col_names else 0
+
+            for i, row_vals in enumerate(batch_rows):
+                linha_excel = i + 2  # header na linha 1
+                pk_val = row_vals[pk_idx] if pk_idx < len(row_vals) else "?"
+                cursor = self.conn.cursor()
+                try:
+                    cursor.execute(sql_insert, row_vals)
+                    inseridos += 1
+                except Exception as row_err:
+                    erros += 1
+                    # Identificar qual coluna tem valor invalido
+                    cols_problema = []
+                    for j, (col, val) in enumerate(zip(col_names, row_vals)):
+                        if val is not None and not isinstance(val, (int, float)):
+                            # Testar se o valor e problematico (string em coluna numerica)
+                            cols_problema.append(f"{col}={repr(val)}")
+                    detalhes = ", ".join(cols_problema[:5]) if cols_problema else "valores desconhecidos"
+                    self._log(f"  ERRO STAGING | linha {linha_excel} PK=[{pk_val}]: {row_err} | {detalhes}")
+                finally:
+                    cursor.close()
+
+            self._log(f"  Fallback: {inseridos} inseridos, {erros} com erro de {len(batch_rows)} linhas")
+            return inseridos, erros
 
     def _exec_sem_params(self, nome_proc):
         """Executa procedure sem parametros."""
@@ -215,6 +701,103 @@ class PlanilhaImportador:
         if "]" in msg:
             msg = msg.split("]")[-1].strip()
         return msg
+
+    # ----------------------------------------------------------
+    # Pre-validacao: Tipo de Codigo (EMPRESA vs PRODUTOS)
+    # ----------------------------------------------------------
+
+    def _ler_config_tipo_codigo(self, wb):
+        """
+        Le a configuracao de tipo de codigo da aba EMPRESA.
+        Celula C7: TipoCodProduto (N=Numerico, A=Alfanumerico)
+        Celula C10: TipoCodAuxiliarProduto (N=Numerico, A=Alfanumerico, X=Nao Usado)
+        Retorna (tipo_cod, tipo_aux) ou (None, None) se nao encontrar.
+        """
+        if "EMPRESA" not in wb.sheetnames:
+            return None, None
+
+        sheet = wb["EMPRESA"]
+
+        # C7 = tipo do CodProduto
+        tipo_cod_raw = sheet["C7"].value
+        tipo_cod = None
+        if tipo_cod_raw:
+            val = str(tipo_cod_raw).strip().upper()
+            if val.startswith("N"):
+                tipo_cod = "N"
+            elif val.startswith("A"):
+                tipo_cod = "A"
+
+        # C10 = tipo do CodAuxiliarProduto
+        tipo_aux_raw = sheet["C10"].value
+        tipo_aux = None
+        if tipo_aux_raw:
+            val = str(tipo_aux_raw).strip().upper()
+            if val.startswith("N"):
+                tipo_aux = "N"
+            elif val.startswith("A"):
+                tipo_aux = "A"
+            elif val.startswith("X"):
+                tipo_aux = "X"
+
+        return tipo_cod, tipo_aux
+
+    def _valor_e_numerico(self, valor):
+        """Verifica se um valor e puramente numerico (apenas digitos)."""
+        if valor is None:
+            return True  # NULL e valido para ambos os tipos
+        val = str(valor).strip()
+        if not val:
+            return True  # Vazio e valido
+        # Remover espacos e verificar se so tem digitos
+        return val.isdigit()
+
+    def _validar_tipos_codigo_produtos(self, wb, tipo_cod, tipo_aux):
+        """
+        Valida se os codigos na aba PRODUTOS sao compativeis com a configuracao.
+        Retorna (ok, lista_erros).
+        """
+        if "PRODUTOS" not in wb.sheetnames:
+            return True, []  # Sem aba PRODUTOS, nada a validar
+
+        header_map, rows = self._ler_linhas_aba(wb, "PRODUTOS")
+        if not rows:
+            return True, []
+
+        erros = []
+        idx_cod = header_map.get("CodProduto")
+        idx_aux = header_map.get("CodAuxiliarProduto")
+
+        for linha_idx, row in enumerate(rows):
+            linha_excel = linha_idx + 2  # Header na linha 1
+
+            # Validar CodProduto
+            if tipo_cod == "N" and idx_cod is not None:
+                cod_val = row[idx_cod] if idx_cod < len(row) else None
+                if cod_val is not None and str(cod_val).strip():
+                    if not self._valor_e_numerico(cod_val):
+                        erros.append(
+                            f"Linha {linha_excel}: CodProduto '{cod_val}' e alfanumerico, "
+                            f"mas configuracao EMPRESA (C7) diz N=Numerico"
+                        )
+                        if len(erros) >= 10:  # Limitar quantidade de erros reportados
+                            erros.append("... (mais erros omitidos)")
+                            break
+
+            # Validar CodAuxiliarProduto
+            if tipo_aux == "N" and idx_aux is not None:
+                aux_val = row[idx_aux] if idx_aux < len(row) else None
+                if aux_val is not None and str(aux_val).strip():
+                    if not self._valor_e_numerico(aux_val):
+                        erros.append(
+                            f"Linha {linha_excel}: CodAuxiliarProduto '{aux_val}' e alfanumerico, "
+                            f"mas configuracao EMPRESA (C10) diz N=Numerico"
+                        )
+                        if len(erros) >= 10:
+                            erros.append("... (mais erros omitidos)")
+                            break
+
+        return len(erros) == 0, erros
 
     # ----------------------------------------------------------
     # Leitura da planilha
@@ -393,6 +976,8 @@ class PlanilhaImportador:
                     # Strings vazias -> NULL (constraints NaoVazioNull)
                     if isinstance(valor, str) and valor.strip() == "":
                         valor = None
+                    # Truncar se exceder tamanho maximo
+                    valor = self._truncar_valor(valor, col_excel)
                     rec = 1  # coluna mapeada
                 else:
                     valor = None
@@ -467,6 +1052,8 @@ class PlanilhaImportador:
             self._log("  Nenhuma linha valida em PRODUTOS")
             return 0, 0
 
+        # Validacao de constraints movida para SQL (set-based, muito mais rapido)
+
         # 1. Criar objetos SQL se necessario
         self._progresso(prog_base, "Preparando importacao em lote...")
         self._setup_batch_objects()
@@ -516,33 +1103,63 @@ class PlanilhaImportador:
                 idx = header_map.get(col_name)
                 if idx is not None and idx < len(row):
                     valor = self._converter_valor(row[idx], col_type.get(col_name, "varchar"))
-                    
-                    # --- CORRECAO AQUI ---
+
                     # Se for string vazia, vira None
                     if isinstance(valor, str) and valor.strip() == "":
                         valor = None
-                    
+
                     # Se estiver na lista de Zeros Proibidos e for 0, vira None (NULL no banco)
                     param_name = col_sql_param.get(col_name, "")
                     if param_name in self._ZERO_TO_NULL and valor == 0:
                         valor = None
-                    # ---------------------
+
+                    # Truncar se exceder tamanho maximo
+                    valor = self._truncar_valor(valor, col_name)
 
                 else:
                     valor = None
                 vals.append(valor)
             batch_rows.append(vals)
 
-        # 4. Bulk insert (fast_executemany se driver suportar)
+        # DEBUG: verificar duplicatas no Python ANTES de enviar pro staging
+        codprod_idx = col_order.index("CodProduto")
+        codprod_vals = [r[codprod_idx] for r in batch_rows if r[codprod_idx] is not None]
+        codprod_unicos = set(codprod_vals)
+        if len(codprod_vals) != len(codprod_unicos):
+            dups_py = len(codprod_vals) - len(codprod_unicos)
+            self._log(f"  DEBUG: {len(batch_rows)} linhas no batch, {len(codprod_unicos)} CodProduto unicos, {dups_py} duplicados no Python!")
+            # Listar quais CodProduto estao duplicados
+            from collections import Counter
+            contagem = Counter(codprod_vals)
+            for cod, qtd in contagem.most_common(10):
+                if qtd > 1:
+                    self._log(f"    CodProduto={cod} aparece {qtd}x no batch_rows")
+        else:
+            self._log(f"  DEBUG: {len(batch_rows)} linhas no batch, todos CodProduto unicos no Python.")
+
+        # 4. Bulk insert com fallback row-by-row se falhar
+        # col_types na mesma ordem de col_order para setinputsizes
+        col_types_list = [col_type.get(c, "varchar") for c in col_order]
+        inseridos, erros_staging = self._bulk_insert_staging(
+            SQL_INSERT_STAGING, batch_rows, col_order, pk_col_name="CodProduto",
+            staging_table="ImportaProdutoAmbos_Staging", col_types=col_types_list
+        )
+
+        if erros_staging > 0:
+            self._log(f"  {inseridos} linhas inseridas no staging ({erros_staging} com erro).")
+        else:
+            self._log(f"  {total} linhas inseridas no staging.")
+
+        # DEBUG: verificar quantas linhas realmente ficaram no staging
         cursor = self.conn.cursor()
-        if self._fast_executemany_ok:
-            cursor.fast_executemany = True
         try:
-            cursor.executemany(SQL_INSERT_STAGING, batch_rows)
+            cursor.execute("SELECT COUNT(*) AS total, COUNT(DISTINCT codproduto) AS unicos FROM ImportaProdutoAmbos_Staging")
+            row = cursor.fetchone()
+            self._log(f"  DEBUG STAGING: {row[0]} linhas total, {row[1]} CodProduto unicos no banco.")
+            if row[0] != len(batch_rows):
+                self._log(f"  DEBUG STAGING: DIFERENCA! Python enviou {len(batch_rows)}, staging tem {row[0]}!")
         finally:
             cursor.close()
-
-        self._log(f"  {total} linhas inseridas no staging.")
         self._progresso(prog_base + int(prog_range * 0.3), "Executando validacao e importacao em lote...")
 
         # 5. Chamar a procedure batch
@@ -639,6 +1256,8 @@ class PlanilhaImportador:
             self._log("  Nenhuma linha valida em TRANSP")
             return 0, 0
 
+        # Validacao de constraints movida para SQL (set-based, muito mais rapido)
+
         # 1. Setup
         self._progresso(prog_base, "Preparando importacao em lote (TRANSP)...")
         self._setup_batch_objects_transportadora()
@@ -662,7 +1281,10 @@ class PlanilhaImportador:
 
         # 3. Montar dados
         self._progresso(prog_base + 2, f"Carregando {total} transportadoras no staging...")
+        colunas = config["colunas"]
         col_order = ["CodTransportadora", "Transportadora", "TransportadoraPadrao"]
+        col_type = {c[0]: c[2] for c in colunas}
+        col_sql_param = {c[0]: c[1].lower() for c in colunas}
 
         batch_rows = []
         for row in linhas:
@@ -670,24 +1292,31 @@ class PlanilhaImportador:
             for col_name in col_order:
                 idx = header_map.get(col_name)
                 if idx is not None and idx < len(row):
-                    valor = self._converter_valor(row[idx], "varchar")
+                    valor = self._converter_valor(row[idx], col_type.get(col_name, "varchar"))
                     if isinstance(valor, str) and valor.strip() == "":
                         valor = None
+                    # Se estiver na lista de Zeros Proibidos e for 0, vira None
+                    param_name = col_sql_param.get(col_name, "")
+                    if param_name in self._ZERO_TO_NULL and valor == 0:
+                        valor = None
+                    # Truncar se exceder tamanho maximo
+                    valor = self._truncar_valor(valor, col_name)
                 else:
                     valor = None
                 vals.append(valor)
             batch_rows.append(vals)
 
-        # 4. Bulk insert (fast_executemany se driver suportar)
-        cursor = self.conn.cursor()
-        if self._fast_executemany_ok:
-            cursor.fast_executemany = True
-        try:
-            cursor.executemany(SQL_INSERT_STAGING_TRANSPORTADORA, batch_rows)
-        finally:
-            cursor.close()
+        # 4. Bulk insert com fallback row-by-row se falhar
+        col_types_list = [col_type.get(c, "varchar") for c in col_order]
+        inseridos, erros_staging = self._bulk_insert_staging(
+            SQL_INSERT_STAGING_TRANSPORTADORA, batch_rows, col_order, pk_col_name="CodTransportadora",
+            staging_table="ImportaTransportadora_Staging", col_types=col_types_list
+        )
 
-        self._log(f"  {total} linhas inseridas no staging.")
+        if erros_staging > 0:
+            self._log(f"  {inseridos} linhas inseridas no staging ({erros_staging} com erro).")
+        else:
+            self._log(f"  {total} linhas inseridas no staging.")
         self._progresso(prog_base + int(prog_range * 0.3), "Executando importacao em lote (TRANSP)...")
 
         # 5. Executar procedure
@@ -759,8 +1388,19 @@ class PlanilhaImportador:
 
     def _importar_clientes_lote(self, wb, sobreescreve, prog_base, prog_range):
         """Importa CLIENTES usando staging table + procedure batch."""
+        import traceback as tb  # Import local para evitar problemas no PyInstaller
         t0 = time.time()
         self._log("--- Importando CLIENTES (modo lote) ---")
+
+        try:
+            return self._importar_clientes_lote_impl(wb, sobreescreve, prog_base, prog_range, t0)
+        except Exception as e:
+            self._log(f"  ERRO em _importar_clientes_lote: {type(e).__name__}: {e}")
+            self._log(f"  Traceback: {tb.format_exc()}")
+            raise
+
+    def _importar_clientes_lote_impl(self, wb, sobreescreve, prog_base, prog_range, t0):
+        """Implementacao real do _importar_clientes_lote."""
 
         config = MAPA_ABAS["CLIENTES"]
         header_map, rows = self._ler_linhas_aba(wb, "CLIENTES")
@@ -778,6 +1418,8 @@ class PlanilhaImportador:
         if total == 0:
             self._log("  Nenhuma linha valida em CLIENTES")
             return 0, 0
+
+        # Validacao de constraints movida para SQL (set-based, muito mais rapido)
 
         # 1. Setup
         self._progresso(prog_base, "Preparando importacao em lote (CLIENTES)...")
@@ -824,24 +1466,43 @@ class PlanilhaImportador:
                         valor = self._formatar_cnpjcpf(valor)
                     elif col_name == "CEP" and valor:
                         valor = self._formatar_cep(valor)
+                    # DDD: extrair apenas digitos (ex: "(55)" -> 55)
+                    elif col_name == "DDD" and valor is not None:
+                        if isinstance(valor, str):
+                            digitos = ''.join(c for c in valor if c.isdigit())
+                            valor = int(digitos) if digitos else None
+                        if valor == 0:
+                            valor = None
+                    # UF: validar e converter invalida para NULL
+                    elif col_name == "UF" and valor is not None:
+                        uf_upper = str(valor).strip().upper()
+                        if uf_upper not in self._UFS_VALIDAS:
+                            valor = None
+                        else:
+                            valor = uf_upper
                     # CodRepresentante e CodTransportadora: 0 -> NULL
-                    if col_name in ("CodRepresentante", "CodTransportadora", "DDD") and valor == 0:
+                    if col_name in ("CodRepresentante", "CodTransportadora") and valor == 0:
                         valor = None
+                    # Truncar se exceder tamanho maximo
+                    valor = self._truncar_valor(valor, col_name)
                 else:
                     valor = None
                 vals.append(valor)
             batch_rows.append(vals)
 
-        # 4. Bulk insert (fast_executemany se driver suportar)
-        cursor = self.conn.cursor()
-        if self._fast_executemany_ok:
-            cursor.fast_executemany = True
-        try:
-            cursor.executemany(SQL_INSERT_STAGING_CLIENTE, batch_rows)
-        finally:
-            cursor.close()
+        # 4. Bulk insert com fallback row-by-row se falhar
+        config_cli = MAPA_ABAS["CLIENTES"]
+        col_type_cli = {c[0]: c[2] for c in config_cli["colunas"]}
+        col_types_list = [col_type_cli.get(c, "varchar") for c in col_order]
+        inseridos, erros_staging = self._bulk_insert_staging(
+            SQL_INSERT_STAGING_CLIENTE, batch_rows, col_order, pk_col_name="CodCliente",
+            staging_table="ImportaCliente_Staging", col_types=col_types_list
+        )
 
-        self._log(f"  {total} linhas inseridas no staging.")
+        if erros_staging > 0:
+            self._log(f"  {inseridos} linhas inseridas no staging ({erros_staging} com erro).")
+        else:
+            self._log(f"  {total} linhas inseridas no staging.")
         self._progresso(prog_base + int(prog_range * 0.3), "Executando importacao em lote (CLIENTES)...")
 
         # 5. Executar procedure
@@ -1038,6 +1699,31 @@ class PlanilhaImportador:
             self._progresso(2, "Carregando planilha...")
             wb = load_workbook(arquivo_excel, data_only=True)
             self._log(f"Planilha: {os.path.basename(arquivo_excel)}")
+
+            # ============================================================
+            # PRE-VALIDACAO CRITICA: Tipo de Codigo (EMPRESA vs PRODUTOS)
+            # Se a configuracao diz "Numerico" mas os dados sao alfanumericos,
+            # a importacao inteira falharia depois. Melhor abortar agora.
+            # ============================================================
+            if "PRODUTOS" in abas_selecionadas:
+                self._progresso(3, "Validando configuracao de tipos de codigo...")
+                tipo_cod, tipo_aux = self._ler_config_tipo_codigo(wb)
+                self._log(f"  Config EMPRESA: TipoCodProduto={tipo_cod}, TipoCodAuxiliar={tipo_aux}")
+
+                if tipo_cod or tipo_aux:
+                    ok, erros_tipo = self._validar_tipos_codigo_produtos(wb, tipo_cod, tipo_aux)
+                    if not ok:
+                        self._log("=" * 60)
+                        self._log("ERRO CRITICO: Incompatibilidade de tipo de codigo!")
+                        self._log("=" * 60)
+                        for erro in erros_tipo:
+                            self._log(f"  {erro}")
+                        self._log("")
+                        self._log("SOLUCAO: Corrija a configuracao na aba EMPRESA (C7/C10)")
+                        self._log("         ou corrija os codigos na aba PRODUTOS.")
+                        self._log("=" * 60)
+                        wb.close()
+                        return {"ERRO_GERAL": "Tipo de codigo incompativel entre EMPRESA e PRODUTOS. Veja o log."}
 
             if excluir_tudo:
                 self._progresso(3, "Excluindo todos os dados...")

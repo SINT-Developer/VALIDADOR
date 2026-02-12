@@ -113,33 +113,26 @@ def atualizar_versao_codigo(nova_versao):
 
 
 def gerar_exe():
-    """Gera o executavel com PyInstaller"""
-    print("[...] Gerando executavel com PyInstaller...")
+    """Gera o executavel com PyInstaller usando o spec file"""
+    print("[...] Gerando executavel com PyInstaller (usando importador.spec)...")
 
     # Mudar para o diretorio do importador
     old_cwd = os.getcwd()
     os.chdir(BASE_DIR)
 
-    # Caminho do icone na pasta raiz
-    icon_path = os.path.join(ROOT_DIR, "icon.ico")
-
     try:
+        # Usar o spec file que tem todos os hiddenimports configurados
         cmd = [
             "pyinstaller",
-            "--onefile",
-            "--windowed",
-            f"--icon={icon_path}",
-            "--name", "Importador_SINT",
-            "--add-data", f"{os.path.join(ROOT_DIR, 'planilha_validator.py')};.",
-            "--hidden-import", "pyodbc",
-            "--hidden-import", "openpyxl",
             "--noconfirm",
-            "app.py"
+            SPEC_FILE
         ]
+
         result = subprocess.run(cmd, capture_output=True, text=True)
 
         if result.returncode != 0:
             print(f"ERRO ao gerar exe: {result.stderr}")
+            print(f"STDOUT: {result.stdout}")
             return False
 
         if not os.path.exists(EXE_PATH):
