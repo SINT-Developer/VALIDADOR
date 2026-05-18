@@ -575,19 +575,24 @@ class PlanilhaImportador:
     def _bulk_insert_staging(self, sql_insert, batch_rows, col_names, pk_col_name="?",
                               staging_table=None, col_types=None):
         """
-        Tenta bulk insert (fast_executemany). Se falhar, faz fallback row-by-row
-        para identificar exatamente quais linhas/colunas tem dados invalidos.
-        Retorna (linhas_inseridas, linhas_com_erro).
-        staging_table: nome da staging table para limpar antes do fallback (evita duplicacao).
-        col_types: lista de tipos SQL (ex: ["varchar","int","decimal","datetime"]) para setinputsizes.
+        Tenta bulk insert (fast_executemany). Se falhar, faz fallback row-by-row.
+        Compativel com insercao em chunks (nao trunca staging inteira no fallback).
         """
         import pyodbc as _pyodbc
+
+        # Guardar max identity antes de inserir (para limpar apenas este chunk no fallback)
+        identity_before = 0
+        if staging_table:
+            c = self.conn.cursor()
+            try:
+                c.execute(f"SELECT ISNULL(MAX(linha), 0) FROM {staging_table}")
+                identity_before = c.fetchone()[0]
+            finally:
+                c.close()
+
         cursor = self.conn.cursor()
         if self._fast_executemany_ok:
             cursor.fast_executemany = True
-
-            # Definir tipos explicitamente para evitar erro 22018
-            # (fast_executemany infere tipos pela primeira linha, que pode ter None)
             if col_types:
                 _type_map = {
                     "datetime": (_pyodbc.SQL_TYPE_TIMESTAMP, 23, 3),
@@ -595,7 +600,7 @@ class PlanilhaImportador:
                     "int":      (_pyodbc.SQL_INTEGER, 0, 0),
                     "smallint": (_pyodbc.SQL_SMALLINT, 0, 0),
                     "tinyint":  (_pyodbc.SQL_TINYINT, 0, 0),
-                    "char":     (_pyodbc.SQL_VARCHAR, 10, 0),  # VARCHAR para evitar truncation em char(2+)
+                    "char":     (_pyodbc.SQL_VARCHAR, 10, 0),
                     "varchar":  (_pyodbc.SQL_VARCHAR, 200, 0),
                 }
                 input_sizes = [_type_map.get(t, (_pyodbc.SQL_VARCHAR, 200, 0)) for t in col_types]
@@ -609,28 +614,22 @@ class PlanilhaImportador:
             cursor.close()
             self._log(f"  Bulk insert falhou: {bulk_err}")
 
-            # IMPORTANTE: limpar staging antes do fallback!
-            # O executemany pode ter inserido dados parciais antes de falhar,
-            # e o fallback vai reinserir tudo, causando duplicacao.
+            # Limpar apenas as linhas deste chunk (parciais do executemany que falhou)
             if staging_table:
-                self._log(f"  Limpando staging ({staging_table}) antes do fallback...")
                 c = self.conn.cursor()
                 try:
-                    c.execute(f"TRUNCATE TABLE {staging_table}")
-                    c.execute(f"DBCC CHECKIDENT ('{staging_table}', RESEED, 0)")
+                    c.execute(f"DELETE FROM {staging_table} WHERE linha > {identity_before}")
                     while c.nextset():
                         pass
                 finally:
                     c.close()
 
-            self._log(f"  Fazendo fallback row-by-row para identificar linhas com problema...")
-
+            self._log(f"  Fazendo fallback row-by-row...")
             inseridos = 0
             erros = 0
             pk_idx = col_names.index(pk_col_name) if pk_col_name in col_names else 0
 
             for i, row_vals in enumerate(batch_rows):
-                linha_excel = i + 2  # header na linha 1
                 pk_val = row_vals[pk_idx] if pk_idx < len(row_vals) else "?"
                 cursor = self.conn.cursor()
                 try:
@@ -638,14 +637,12 @@ class PlanilhaImportador:
                     inseridos += 1
                 except Exception as row_err:
                     erros += 1
-                    # Identificar qual coluna tem valor invalido
                     cols_problema = []
                     for j, (col, val) in enumerate(zip(col_names, row_vals)):
                         if val is not None and not isinstance(val, (int, float)):
-                            # Testar se o valor e problematico (string em coluna numerica)
                             cols_problema.append(f"{col}={repr(val)}")
                     detalhes = ", ".join(cols_problema[:5]) if cols_problema else "valores desconhecidos"
-                    self._log(f"  ERRO STAGING | linha {linha_excel} PK=[{pk_val}]: {row_err} | {detalhes}")
+                    self._log(f"  ERRO STAGING | PK=[{pk_val}]: {row_err} | {detalhes}")
                 finally:
                     cursor.close()
 
@@ -717,28 +714,26 @@ class PlanilhaImportador:
             return None, None
 
         sheet = wb["EMPRESA"]
-
-        # C7 = tipo do CodProduto
-        tipo_cod_raw = sheet["C7"].value
         tipo_cod = None
-        if tipo_cod_raw:
-            val = str(tipo_cod_raw).strip().upper()
-            if val.startswith("N"):
-                tipo_cod = "N"
-            elif val.startswith("A"):
-                tipo_cod = "A"
-
-        # C10 = tipo do CodAuxiliarProduto
-        tipo_aux_raw = sheet["C10"].value
         tipo_aux = None
-        if tipo_aux_raw:
-            val = str(tipo_aux_raw).strip().upper()
-            if val.startswith("N"):
-                tipo_aux = "N"
-            elif val.startswith("A"):
-                tipo_aux = "A"
-            elif val.startswith("X"):
-                tipo_aux = "X"
+
+        # Ler por iter_rows (compativel com read_only=True)
+        # C7 = row 7 col 2 (0-indexed), C10 = row 10 col 2
+        for i, row in enumerate(sheet.iter_rows(min_row=1, max_row=10, values_only=True), 1):
+            if i == 7 and len(row) > 2 and row[2]:
+                val = str(row[2]).strip().upper()
+                if val.startswith("N"):
+                    tipo_cod = "N"
+                elif val.startswith("A"):
+                    tipo_cod = "A"
+            elif i == 10 and len(row) > 2 and row[2]:
+                val = str(row[2]).strip().upper()
+                if val.startswith("N"):
+                    tipo_aux = "N"
+                elif val.startswith("A"):
+                    tipo_aux = "A"
+                elif val.startswith("X"):
+                    tipo_aux = "X"
 
         return tipo_cod, tipo_aux
 
@@ -755,23 +750,21 @@ class PlanilhaImportador:
     def _validar_tipos_codigo_produtos(self, wb, tipo_cod, tipo_aux):
         """
         Valida se os codigos na aba PRODUTOS sao compativeis com a configuracao.
+        Usa streaming para nao carregar tudo na memoria.
         Retorna (ok, lista_erros).
         """
-        if "PRODUTOS" not in wb.sheetnames:
-            return True, []  # Sem aba PRODUTOS, nada a validar
-
-        header_map, rows = self._ler_linhas_aba(wb, "PRODUTOS")
-        if not rows:
+        header_map = self._ler_header_aba(wb, "PRODUTOS")
+        if header_map is None:
             return True, []
 
         erros = []
         idx_cod = header_map.get("CodProduto")
         idx_aux = header_map.get("CodAuxiliarProduto")
 
-        for linha_idx, row in enumerate(rows):
-            linha_excel = linha_idx + 2  # Header na linha 1
+        sheet = wb["PRODUTOS"]
+        for linha_idx, row in enumerate(sheet.iter_rows(min_row=2, values_only=True)):
+            linha_excel = linha_idx + 2
 
-            # Validar CodProduto
             if tipo_cod == "N" and idx_cod is not None:
                 cod_val = row[idx_cod] if idx_cod < len(row) else None
                 if cod_val is not None and str(cod_val).strip():
@@ -780,11 +773,10 @@ class PlanilhaImportador:
                             f"Linha {linha_excel}: CodProduto '{cod_val}' e alfanumerico, "
                             f"mas configuracao EMPRESA (C7) diz N=Numerico"
                         )
-                        if len(erros) >= 10:  # Limitar quantidade de erros reportados
+                        if len(erros) >= 10:
                             erros.append("... (mais erros omitidos)")
                             break
 
-            # Validar CodAuxiliarProduto
             if tipo_aux == "N" and idx_aux is not None:
                 aux_val = row[idx_aux] if idx_aux < len(row) else None
                 if aux_val is not None and str(aux_val).strip():
@@ -803,13 +795,21 @@ class PlanilhaImportador:
     # Leitura da planilha
     # ----------------------------------------------------------
 
-    def _ler_linhas_aba(self, wb, nome_aba):
-        """Retorna (header_map, rows) de uma aba."""
+    def _ler_header_aba(self, wb, nome_aba):
+        """Le apenas o header de uma aba. Compativel com read_only=True."""
         if nome_aba not in wb.sheetnames:
+            return None
+        sheet = wb[nome_aba]
+        for row in sheet.iter_rows(min_row=1, max_row=1, values_only=True):
+            return {name: idx for idx, name in enumerate(row) if name is not None}
+        return None
+
+    def _ler_linhas_aba(self, wb, nome_aba):
+        """Retorna (header_map, rows) de uma aba. Usado apenas para abas pequenas."""
+        header_map = self._ler_header_aba(wb, nome_aba)
+        if header_map is None:
             return None, []
         sheet = wb[nome_aba]
-        header = [cell.value for cell in sheet[1]]
-        header_map = {name: idx for idx, name in enumerate(header) if name is not None}
         rows = []
         for row in sheet.iter_rows(min_row=2, values_only=True):
             if all(v is None or str(v).strip() == "" for v in row):
@@ -1027,34 +1027,27 @@ class PlanilhaImportador:
         finally:
             cursor.close()
 
+    _CHUNK_SIZE = 10000
+
     def _importar_produtos_lote(self, wb, sobreescreve, prog_base, prog_range):
-        """Importa PRODUTOS usando staging table + procedure batch."""
+        """Importa PRODUTOS usando staging table + procedure batch. Streaming em chunks."""
         t0 = time.time()
         self._log("--- Importando PRODUTOS (modo lote) ---")
 
         config = MAPA_ABAS["PRODUTOS"]
         colunas = config["colunas"]
 
-        header_map, rows = self._ler_linhas_aba(wb, "PRODUTOS")
+        header_map = self._ler_header_aba(wb, "PRODUTOS")
         if header_map is None:
             self._log("  Aba PRODUTOS nao encontrada!")
             return 0, 1
 
-        # Filtrar linhas com PK preenchida (CodProduto)
         pk0_idx = header_map.get("CodProduto")
         if pk0_idx is None:
             self._log("  Coluna PK 'CodProduto' nao encontrada em PRODUTOS")
             return 0, 1
 
-        linhas = [r for r in rows if pk0_idx < len(r) and r[pk0_idx] is not None and str(r[pk0_idx]).strip()]
-        total = len(linhas)
-        if total == 0:
-            self._log("  Nenhuma linha valida em PRODUTOS")
-            return 0, 0
-
-        # Validacao de constraints movida para SQL (set-based, muito mais rapido)
-
-        # 1. Criar objetos SQL se necessario
+        # 1. Criar objetos SQL
         self._progresso(prog_base, "Preparando importacao em lote...")
         self._setup_batch_objects()
 
@@ -1067,7 +1060,6 @@ class PlanilhaImportador:
         finally:
             cursor.close()
 
-        # Resetar IDENTITY para que 'linha' comece em 1
         cursor = self.conn.cursor()
         try:
             cursor.execute("DBCC CHECKIDENT ('ImportaProdutoAmbos_Staging', RESEED, 0)")
@@ -1076,10 +1068,20 @@ class PlanilhaImportador:
         finally:
             cursor.close()
 
-        # 3. Montar parametros para bulk insert
-        self._progresso(prog_base + 2, f"Carregando {total} produtos no staging...")
+        # 3. Ler configuracao de tamanho de codigo do banco para zero-padding
+        tamanho_cod = None
+        try:
+            c = self.conn.cursor()
+            c.execute("SELECT TipoCodProduto, TamanhoCodProduto FROM Empresa WHERE CodEmpresa = 1")
+            row_emp = c.fetchone()
+            c.close()
+            if row_emp and row_emp[0] == "N" and row_emp[1]:
+                tamanho_cod = int(row_emp[1])
+                self._log(f"  TipoCodProduto=N, TamanhoCodProduto={tamanho_cod} (zero-padding ativo)")
+        except Exception as e:
+            self._log(f"  AVISO: nao foi possivel ler TamanhoCodProduto: {e}")
 
-        # Ordem das colunas no INSERT: mesma de SQL_INSERT_STAGING
+        # 4. Streaming em chunks: ler da planilha e inserir no staging em lotes
         col_order = [
             "CodProduto", "CodAuxiliarProduto", "Produto",
             "PrecoTabela1", "PrecoTabela2", "PrecoTabela3",
@@ -1089,77 +1091,73 @@ class PlanilhaImportador:
             "CodFamilia", "CodEstilo", "QtdeMultipla", "QtdeMinima",
             "QtdeTabela1", "QtdeTabela2", "QtdeTabela3", "QtdeEtiquetas",
         ]
-
-        # Map excel column -> (index_in_col_order, tipo_sql)
         col_type = {c[0]: c[2] for c in colunas}
-        
-        # NOVO: Mapear NomeExcel para @NomeParametroSQL para checar a lista _ZERO_TO_NULL
-        col_sql_param = {c[0]: c[1].lower() for c in colunas} 
+        col_sql_param = {c[0]: c[1].lower() for c in colunas}
+        col_types_list = [col_type.get(c, "varchar") for c in col_order]
 
-        batch_rows = []
-        for row in linhas:
+        total = 0
+        total_inseridos = 0
+        total_erros_staging = 0
+        chunk = []
+
+        sheet = wb["PRODUTOS"]
+        for row in sheet.iter_rows(min_row=2, values_only=True):
+            if all(v is None or str(v).strip() == "" for v in row):
+                continue
+            if pk0_idx >= len(row) or row[pk0_idx] is None or not str(row[pk0_idx]).strip():
+                continue
+
+            total += 1
             vals = []
             for col_name in col_order:
                 idx = header_map.get(col_name)
                 if idx is not None and idx < len(row):
                     valor = self._converter_valor(row[idx], col_type.get(col_name, "varchar"))
-
-                    # Se for string vazia, vira None
                     if isinstance(valor, str) and valor.strip() == "":
                         valor = None
-
-                    # Se estiver na lista de Zeros Proibidos e for 0, vira None (NULL no banco)
+                    # Zero-padding: CodProduto numerico pode perder zeros a esquerda no openpyxl
+                    if col_name == "CodProduto" and tamanho_cod and isinstance(valor, str):
+                        digitos = ''.join(c for c in valor if c.isdigit())
+                        if digitos == valor and len(valor) < tamanho_cod:
+                            valor = valor.zfill(tamanho_cod)
                     param_name = col_sql_param.get(col_name, "")
                     if param_name in self._ZERO_TO_NULL and valor == 0:
                         valor = None
-
-                    # Truncar se exceder tamanho maximo
                     valor = self._truncar_valor(valor, col_name)
-
                 else:
                     valor = None
                 vals.append(valor)
-            batch_rows.append(vals)
+            chunk.append(vals)
 
-        # DEBUG: verificar duplicatas no Python ANTES de enviar pro staging
-        codprod_idx = col_order.index("CodProduto")
-        codprod_vals = [r[codprod_idx] for r in batch_rows if r[codprod_idx] is not None]
-        codprod_unicos = set(codprod_vals)
-        if len(codprod_vals) != len(codprod_unicos):
-            dups_py = len(codprod_vals) - len(codprod_unicos)
-            self._log(f"  DEBUG: {len(batch_rows)} linhas no batch, {len(codprod_unicos)} CodProduto unicos, {dups_py} duplicados no Python!")
-            # Listar quais CodProduto estao duplicados
-            from collections import Counter
-            contagem = Counter(codprod_vals)
-            for cod, qtd in contagem.most_common(10):
-                if qtd > 1:
-                    self._log(f"    CodProduto={cod} aparece {qtd}x no batch_rows")
-        else:
-            self._log(f"  DEBUG: {len(batch_rows)} linhas no batch, todos CodProduto unicos no Python.")
+            if len(chunk) >= self._CHUNK_SIZE:
+                self._progresso(prog_base + 2, f"Inserindo no staging... ({total} linhas)")
+                ins, err = self._bulk_insert_staging(
+                    SQL_INSERT_STAGING, chunk, col_order, pk_col_name="CodProduto",
+                    staging_table="ImportaProdutoAmbos_Staging", col_types=col_types_list
+                )
+                total_inseridos += ins
+                total_erros_staging += err
+                chunk = []
 
-        # 4. Bulk insert com fallback row-by-row se falhar
-        # col_types na mesma ordem de col_order para setinputsizes
-        col_types_list = [col_type.get(c, "varchar") for c in col_order]
-        inseridos, erros_staging = self._bulk_insert_staging(
-            SQL_INSERT_STAGING, batch_rows, col_order, pk_col_name="CodProduto",
-            staging_table="ImportaProdutoAmbos_Staging", col_types=col_types_list
-        )
+        # Ultimo chunk
+        if chunk:
+            self._progresso(prog_base + 2, f"Inserindo no staging... ({total} linhas)")
+            ins, err = self._bulk_insert_staging(
+                SQL_INSERT_STAGING, chunk, col_order, pk_col_name="CodProduto",
+                staging_table="ImportaProdutoAmbos_Staging", col_types=col_types_list
+            )
+            total_inseridos += ins
+            total_erros_staging += err
 
-        if erros_staging > 0:
-            self._log(f"  {inseridos} linhas inseridas no staging ({erros_staging} com erro).")
+        if total == 0:
+            self._log("  Nenhuma linha valida em PRODUTOS")
+            return 0, 0
+
+        if total_erros_staging > 0:
+            self._log(f"  {total_inseridos} linhas inseridas no staging ({total_erros_staging} com erro).")
         else:
             self._log(f"  {total} linhas inseridas no staging.")
 
-        # DEBUG: verificar quantas linhas realmente ficaram no staging
-        cursor = self.conn.cursor()
-        try:
-            cursor.execute("SELECT COUNT(*) AS total, COUNT(DISTINCT codproduto) AS unicos FROM ImportaProdutoAmbos_Staging")
-            row = cursor.fetchone()
-            self._log(f"  DEBUG STAGING: {row[0]} linhas total, {row[1]} CodProduto unicos no banco.")
-            if row[0] != len(batch_rows):
-                self._log(f"  DEBUG STAGING: DIFERENCA! Python enviou {len(batch_rows)}, staging tem {row[0]}!")
-        finally:
-            cursor.close()
         self._progresso(prog_base + int(prog_range * 0.3), "Executando validacao e importacao em lote...")
 
         # 5. Chamar a procedure batch
@@ -1235,12 +1233,12 @@ class PlanilhaImportador:
             cursor.close()
 
     def _importar_transportadoras_lote(self, wb, sobreescreve, prog_base, prog_range):
-        """Importa TRANSP usando staging table + procedure batch."""
+        """Importa TRANSP usando staging table + procedure batch. Streaming em chunks."""
         t0 = time.time()
         self._log("--- Importando TRANSP (modo lote) ---")
 
         config = MAPA_ABAS["TRANSP"]
-        header_map, rows = self._ler_linhas_aba(wb, "TRANSP")
+        header_map = self._ler_header_aba(wb, "TRANSP")
         if header_map is None:
             self._log("  Aba TRANSP nao encontrada!")
             return 0, 1
@@ -1249,14 +1247,6 @@ class PlanilhaImportador:
         if pk0_idx is None:
             self._log("  Coluna PK 'CodTransportadora' nao encontrada em TRANSP")
             return 0, 1
-
-        linhas = [r for r in rows if pk0_idx < len(r) and r[pk0_idx] is not None and str(r[pk0_idx]).strip()]
-        total = len(linhas)
-        if total == 0:
-            self._log("  Nenhuma linha valida em TRANSP")
-            return 0, 0
-
-        # Validacao de constraints movida para SQL (set-based, muito mais rapido)
 
         # 1. Setup
         self._progresso(prog_base, "Preparando importacao em lote (TRANSP)...")
@@ -1279,15 +1269,26 @@ class PlanilhaImportador:
         finally:
             cursor.close()
 
-        # 3. Montar dados
-        self._progresso(prog_base + 2, f"Carregando {total} transportadoras no staging...")
+        # 3. Streaming em chunks
         colunas = config["colunas"]
         col_order = ["CodTransportadora", "Transportadora", "TransportadoraPadrao"]
         col_type = {c[0]: c[2] for c in colunas}
         col_sql_param = {c[0]: c[1].lower() for c in colunas}
+        col_types_list = [col_type.get(c, "varchar") for c in col_order]
 
-        batch_rows = []
-        for row in linhas:
+        total = 0
+        total_inseridos = 0
+        total_erros_staging = 0
+        chunk = []
+
+        sheet = wb["TRANSP"]
+        for row in sheet.iter_rows(min_row=2, values_only=True):
+            if all(v is None or str(v).strip() == "" for v in row):
+                continue
+            if pk0_idx >= len(row) or row[pk0_idx] is None or not str(row[pk0_idx]).strip():
+                continue
+
+            total += 1
             vals = []
             for col_name in col_order:
                 idx = header_map.get(col_name)
@@ -1295,26 +1296,39 @@ class PlanilhaImportador:
                     valor = self._converter_valor(row[idx], col_type.get(col_name, "varchar"))
                     if isinstance(valor, str) and valor.strip() == "":
                         valor = None
-                    # Se estiver na lista de Zeros Proibidos e for 0, vira None
                     param_name = col_sql_param.get(col_name, "")
                     if param_name in self._ZERO_TO_NULL and valor == 0:
                         valor = None
-                    # Truncar se exceder tamanho maximo
                     valor = self._truncar_valor(valor, col_name)
                 else:
                     valor = None
                 vals.append(valor)
-            batch_rows.append(vals)
+            chunk.append(vals)
 
-        # 4. Bulk insert com fallback row-by-row se falhar
-        col_types_list = [col_type.get(c, "varchar") for c in col_order]
-        inseridos, erros_staging = self._bulk_insert_staging(
-            SQL_INSERT_STAGING_TRANSPORTADORA, batch_rows, col_order, pk_col_name="CodTransportadora",
-            staging_table="ImportaTransportadora_Staging", col_types=col_types_list
-        )
+            if len(chunk) >= self._CHUNK_SIZE:
+                self._progresso(prog_base + 2, f"Inserindo transp no staging... ({total} linhas)")
+                ins, err = self._bulk_insert_staging(
+                    SQL_INSERT_STAGING_TRANSPORTADORA, chunk, col_order, pk_col_name="CodTransportadora",
+                    staging_table="ImportaTransportadora_Staging", col_types=col_types_list
+                )
+                total_inseridos += ins
+                total_erros_staging += err
+                chunk = []
 
-        if erros_staging > 0:
-            self._log(f"  {inseridos} linhas inseridas no staging ({erros_staging} com erro).")
+        if chunk:
+            ins, err = self._bulk_insert_staging(
+                SQL_INSERT_STAGING_TRANSPORTADORA, chunk, col_order, pk_col_name="CodTransportadora",
+                staging_table="ImportaTransportadora_Staging", col_types=col_types_list
+            )
+            total_inseridos += ins
+            total_erros_staging += err
+
+        if total == 0:
+            self._log("  Nenhuma linha valida em TRANSP")
+            return 0, 0
+
+        if total_erros_staging > 0:
+            self._log(f"  {total_inseridos} linhas inseridas no staging ({total_erros_staging} com erro).")
         else:
             self._log(f"  {total} linhas inseridas no staging.")
         self._progresso(prog_base + int(prog_range * 0.3), "Executando importacao em lote (TRANSP)...")
@@ -1400,10 +1414,10 @@ class PlanilhaImportador:
             raise
 
     def _importar_clientes_lote_impl(self, wb, sobreescreve, prog_base, prog_range, t0):
-        """Implementacao real do _importar_clientes_lote."""
+        """Implementacao real do _importar_clientes_lote. Streaming em chunks."""
 
         config = MAPA_ABAS["CLIENTES"]
-        header_map, rows = self._ler_linhas_aba(wb, "CLIENTES")
+        header_map = self._ler_header_aba(wb, "CLIENTES")
         if header_map is None:
             self._log("  Aba CLIENTES nao encontrada!")
             return 0, 1
@@ -1412,14 +1426,6 @@ class PlanilhaImportador:
         if pk0_idx is None:
             self._log("  Coluna PK 'CodCliente' nao encontrada em CLIENTES")
             return 0, 1
-
-        linhas = [r for r in rows if pk0_idx < len(r) and r[pk0_idx] is not None and str(r[pk0_idx]).strip()]
-        total = len(linhas)
-        if total == 0:
-            self._log("  Nenhuma linha valida em CLIENTES")
-            return 0, 0
-
-        # Validacao de constraints movida para SQL (set-based, muito mais rapido)
 
         # 1. Setup
         self._progresso(prog_base, "Preparando importacao em lote (CLIENTES)...")
@@ -1442,17 +1448,29 @@ class PlanilhaImportador:
         finally:
             cursor.close()
 
-        # 3. Montar dados
-        self._progresso(prog_base + 2, f"Carregando {total} clientes no staging...")
+        # 3. Streaming em chunks
         col_order = [
             "CodCliente", "CodRepresentante", "NomeFantasia", "RazaoSocial",
             "CNPJCPF", "IERG", "Logradouro", "Bairro", "Cidade", "UF", "CEP",
             "DDD", "Telefone1", "Telefone2", "FAX", "NomeContato",
             "NomeTransportadora", "Observacao", "EMail", "PrecoTabela", "CodTransportadora"
         ]
+        col_type_cli = {c[0]: c[2] for c in config["colunas"]}
+        col_types_list = [col_type_cli.get(c, "varchar") for c in col_order]
 
-        batch_rows = []
-        for row in linhas:
+        total = 0
+        total_inseridos = 0
+        total_erros_staging = 0
+        chunk = []
+
+        sheet = wb["CLIENTES"]
+        for row in sheet.iter_rows(min_row=2, values_only=True):
+            if all(v is None or str(v).strip() == "" for v in row):
+                continue
+            if pk0_idx >= len(row) or row[pk0_idx] is None or not str(row[pk0_idx]).strip():
+                continue
+
+            total += 1
             vals = []
             for col_name in col_order:
                 idx = header_map.get(col_name)
@@ -1461,46 +1479,55 @@ class PlanilhaImportador:
                     valor = self._converter_valor(row[idx], tipo)
                     if isinstance(valor, str) and valor.strip() == "":
                         valor = None
-                    # CNPJCPF e CEP: formatar
                     if col_name == "CNPJCPF" and valor:
                         valor = self._formatar_cnpjcpf(valor)
                     elif col_name == "CEP" and valor:
                         valor = self._formatar_cep(valor)
-                    # DDD: extrair apenas digitos (ex: "(55)" -> 55)
                     elif col_name == "DDD" and valor is not None:
                         if isinstance(valor, str):
                             digitos = ''.join(c for c in valor if c.isdigit())
                             valor = int(digitos) if digitos else None
                         if valor == 0:
                             valor = None
-                    # UF: validar e converter invalida para NULL
                     elif col_name == "UF" and valor is not None:
                         uf_upper = str(valor).strip().upper()
                         if uf_upper not in self._UFS_VALIDAS:
                             valor = None
                         else:
                             valor = uf_upper
-                    # CodRepresentante e CodTransportadora: 0 -> NULL
                     if col_name in ("CodRepresentante", "CodTransportadora") and valor == 0:
                         valor = None
-                    # Truncar se exceder tamanho maximo
                     valor = self._truncar_valor(valor, col_name)
                 else:
                     valor = None
                 vals.append(valor)
-            batch_rows.append(vals)
+            chunk.append(vals)
 
-        # 4. Bulk insert com fallback row-by-row se falhar
-        config_cli = MAPA_ABAS["CLIENTES"]
-        col_type_cli = {c[0]: c[2] for c in config_cli["colunas"]}
-        col_types_list = [col_type_cli.get(c, "varchar") for c in col_order]
-        inseridos, erros_staging = self._bulk_insert_staging(
-            SQL_INSERT_STAGING_CLIENTE, batch_rows, col_order, pk_col_name="CodCliente",
-            staging_table="ImportaCliente_Staging", col_types=col_types_list
-        )
+            if len(chunk) >= self._CHUNK_SIZE:
+                self._progresso(prog_base + 2, f"Inserindo clientes no staging... ({total} linhas)")
+                ins, err = self._bulk_insert_staging(
+                    SQL_INSERT_STAGING_CLIENTE, chunk, col_order, pk_col_name="CodCliente",
+                    staging_table="ImportaCliente_Staging", col_types=col_types_list
+                )
+                total_inseridos += ins
+                total_erros_staging += err
+                chunk = []
 
-        if erros_staging > 0:
-            self._log(f"  {inseridos} linhas inseridas no staging ({erros_staging} com erro).")
+        if chunk:
+            self._progresso(prog_base + 2, f"Inserindo clientes no staging... ({total} linhas)")
+            ins, err = self._bulk_insert_staging(
+                SQL_INSERT_STAGING_CLIENTE, chunk, col_order, pk_col_name="CodCliente",
+                staging_table="ImportaCliente_Staging", col_types=col_types_list
+            )
+            total_inseridos += ins
+            total_erros_staging += err
+
+        if total == 0:
+            self._log("  Nenhuma linha valida em CLIENTES")
+            return 0, 0
+
+        if total_erros_staging > 0:
+            self._log(f"  {total_inseridos} linhas inseridas no staging ({total_erros_staging} com erro).")
         else:
             self._log(f"  {total} linhas inseridas no staging.")
         self._progresso(prog_base + int(prog_range * 0.3), "Executando importacao em lote (CLIENTES)...")
@@ -1697,7 +1724,7 @@ class PlanilhaImportador:
             self._log("Conectado ao SQL Server.")
 
             self._progresso(2, "Carregando planilha...")
-            wb = load_workbook(arquivo_excel, data_only=True)
+            wb = load_workbook(arquivo_excel, data_only=True, read_only=True)
             self._log(f"Planilha: {os.path.basename(arquivo_excel)}")
 
             # ============================================================
