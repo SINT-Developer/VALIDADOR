@@ -137,7 +137,7 @@ class PlanilhaImportador:
             elif tipo_sql == "decimal":
                 return float(val_str.replace(",", "."))
             else:
-                return val_str
+                return val_str.upper()
         except (ValueError, TypeError):
             # Tipo numerico que nao pode ser convertido -> NULL
             # (evita erro 22018 no bulk insert para staging)
@@ -189,7 +189,7 @@ class PlanilhaImportador:
         return None
 
     # Campos onde valor 0 deve ser convertido para NULL (constraint > 0 OR NULL)
-    _ZERO_TO_NULL = {"@ddd", "@codtransportadora", "@codrepresentante", "@qtdetabela1", "@qtdetabela2", "@qtdetabela3", "@codfamilia", "@codestilo", "@qtdemultipla", "@qtdeminima", "@qtdeetiquetas"}
+    _ZERO_TO_NULL = {"@ddd", "@codtransportadora", "@codrepresentante", "@qtdetabela1", "@qtdetabela2", "@qtdetabela3", "@codfamilia", "@codestilo", "@qtdemultipla", "@qtdeminima", "@qtdeetiquetas", "@precotabela", "@desconto1", "@desconto2", "@desconto3", "@vlrminimopedido"}
 
     # ==================== CONSTRAINTS CHECK DO BANCO ====================
     # Mapeamento das constraints CHECK para validacao pre-batch
@@ -1495,7 +1495,10 @@ class PlanilhaImportador:
                             valor = None
                         else:
                             valor = uf_upper
-                    if col_name in ("CodRepresentante", "CodTransportadora") and valor == 0:
+                    elif col_name in ("Telefone1", "Telefone2", "FAX") and valor is not None:
+                        digitos = ''.join(c for c in str(valor) if c.isdigit())
+                        valor = digitos if digitos else None
+                    if col_name in ("CodRepresentante", "CodTransportadora", "PrecoTabela") and valor == 0:
                         valor = None
                     valor = self._truncar_valor(valor, col_name)
                 else:
