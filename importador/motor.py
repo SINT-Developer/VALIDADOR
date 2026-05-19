@@ -1496,7 +1496,8 @@ class PlanilhaImportador:
                         else:
                             valor = uf_upper
                     elif col_name in ("Telefone1", "Telefone2", "FAX") and valor is not None:
-                        digitos = ''.join(c for c in str(valor) if c.isdigit())
+                        primeiro = str(valor).split("/")[0].strip()
+                        digitos = ''.join(c for c in primeiro if c.isdigit())
                         valor = digitos if digitos else None
                     if col_name in ("CodRepresentante", "CodTransportadora", "PrecoTabela") and valor == 0:
                         valor = None
