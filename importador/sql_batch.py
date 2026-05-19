@@ -889,10 +889,6 @@ BEGIN
     INTO #W
     FROM ImportaCliente_Staging
 
-    -- Aplicar defaults
-    IF @sobreescreve = 2
-        UPDATE #W SET precotabela = 0 WHERE precotabela IS NULL
-
     -- CodRepresentante 0 -> NULL
     UPDATE #W SET codrepresentante = NULL WHERE codrepresentante = 0
 
