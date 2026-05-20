@@ -82,6 +82,10 @@ BEGIN
     INTO #W
     FROM ImportaProdutoAmbos_Staging
 
+    CREATE CLUSTERED INDEX IX_W_linha ON #W (linha)
+    CREATE NONCLUSTERED INDEX IX_W_codproduto ON #W (codproduto)
+    CREATE NONCLUSTERED INDEX IX_W_codaux ON #W (codauxiliarproduto)
+
     -- Empresa nao configurada: aborta tudo
     IF @tipocodproduto IS NULL
     BEGIN
@@ -645,6 +649,7 @@ BEGIN
         ISNULL(erro, 'Importacao efetuada com sucesso.') AS mensagem
     FROM #W
     ORDER BY linha
+    OPTION (RECOMPILE)
 END
 """
 
@@ -704,6 +709,9 @@ BEGIN
         CAST(NULL AS varchar(250)) AS erro
     INTO #W
     FROM ImportaTransportadora_Staging
+
+    CREATE CLUSTERED INDEX IX_W_linha ON #W (linha)
+    CREATE NONCLUSTERED INDEX IX_W_codtransp ON #W (codtransportadora)
 
     -- Aplicar defaults
     UPDATE #W SET transportadorapadrao = 'N' WHERE transportadorapadrao IS NULL
@@ -816,6 +824,7 @@ BEGIN
         CASE WHEN erro IS NULL THEN 'OK' ELSE 'ERRO' END AS status,
         ISNULL(erro, 'Importacao efetuada com sucesso.') AS mensagem
     FROM #W ORDER BY linha
+    OPTION (RECOMPILE)
 END
 """
 
@@ -888,6 +897,9 @@ BEGIN
         CAST(NULL AS varchar(250)) AS erro
     INTO #W
     FROM ImportaCliente_Staging
+
+    CREATE CLUSTERED INDEX IX_W_linha ON #W (linha)
+    CREATE NONCLUSTERED INDEX IX_W_codcliente ON #W (codcliente)
 
     -- CodRepresentante 0 -> NULL
     UPDATE #W SET codrepresentante = NULL WHERE codrepresentante = 0
@@ -1121,6 +1133,7 @@ BEGIN
         CASE WHEN erro IS NULL THEN 'OK' ELSE 'ERRO' END AS status,
         ISNULL(erro, 'Importacao efetuada com sucesso.') AS mensagem
     FROM #W ORDER BY linha
+    OPTION (RECOMPILE)
 END
 """
 
