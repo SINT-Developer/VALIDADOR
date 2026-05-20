@@ -37,7 +37,7 @@ from motor import PlanilhaImportador
 from mapeamento import ORDEM_IMPORTACAO
 from planilha_validator import PlanilhaValidator
 
-APP_VERSION = "1.2.17"
+APP_VERSION = "1.2.26"
 VERSION_URL = "https://gist.githubusercontent.com/SINT-Developer/4005d983a51756ce108aef5f064f6c01/raw/importador_version.json"
 
 
@@ -297,9 +297,16 @@ class ImportadorApp:
     # ----------------------------------------------------------
 
     def _build_ui(self):
+        # Barra de status fixa na parte inferior (sempre visivel, mesmo na aba Logs)
+        pf = ttk.Frame(self.root, padding=(5, 2, 5, 5))
+        pf.pack(side=tk.BOTTOM, fill=tk.X)
+        ttk.Progressbar(pf, variable=self.progress_var, maximum=100).pack(fill=tk.X)
+        self.lbl_status = ttk.Label(pf, textvariable=self.status_var, font=("Arial", 9), anchor=tk.W)
+        self.lbl_status.pack(fill=tk.X, pady=(2, 0))
+
         # Notebook principal (abas: Importador / Logs)
         self.notebook_principal = ttk.Notebook(self.root)
-        self.notebook_principal.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        self.notebook_principal.pack(fill=tk.BOTH, expand=True, padx=5, pady=(5, 0))
 
         # =======================================================
         # ABA 1: IMPORTADOR
@@ -426,13 +433,6 @@ class ImportadorApp:
             command=self._iniciar
         )
         self.btn_importar.grid(row=0, column=0, sticky=tk.EW, ipady=8)
-
-        pf = ttk.Frame(bf)
-        pf.grid(row=1, column=0, sticky=tk.EW, pady=(4, 0))
-        pf.columnconfigure(0, weight=1)
-        ttk.Progressbar(pf, variable=self.progress_var, maximum=100).grid(row=0, column=0, sticky=tk.EW, padx=(0, 5))
-        self.lbl_status = ttk.Label(pf, textvariable=self.status_var, font=("Arial", 8), width=35, anchor=tk.W)
-        self.lbl_status.grid(row=0, column=1)
 
         # Creditos
         ttk.Label(main, text="Desenvolvido por SINT", font=("Arial", 8), foreground="gray").grid(
@@ -793,7 +793,7 @@ class ImportadorApp:
     def _progresso(self, value, message):
         def _update():
             self.progress_var.set(value)
-            self.status_var.set(message[:50])
+            self.status_var.set(message)
             self.root.update_idletasks()
         self.root.after(0, _update)
 
@@ -860,8 +860,9 @@ class ImportadorApp:
         try:
             # Pre-validacao (se marcada)
             if self.validar_antes.get():
-                self._progresso(0, "Validando planilha...")
+                self._progresso(2, "Carregando planilha em memoria...")
                 self._log_detalhe("=== PRE-VALIDACAO ===")
+                self._log_detalhe(f"Carregando: {os.path.basename(arquivo)} (aguarde...)")
 
                 validator = PlanilhaValidator(arquivo, progress_callback=self._progresso)
                 validator.versao_srppwin = self.versao_srppwin.get()

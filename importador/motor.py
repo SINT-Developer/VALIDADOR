@@ -9,6 +9,7 @@ import pyodbc
 from openpyxl import load_workbook
 from mapeamento import MAPA_ABAS, ORDEM_IMPORTACAO
 from sql_batch import (
+    SQL_REMOVE_SYNC_TRIGGERS,
     SQL_CREATE_STAGING,
     SQL_CREATE_PROCEDURE,
     SQL_CREATE_PROCEDURE_BODY,
@@ -1726,6 +1727,15 @@ class PlanilhaImportador:
             self._progresso(0, "Conectando ao SQL Server...")
             self.conectar()
             self._log("Conectado ao SQL Server.")
+
+            # Remove triggers obsoletas de SyncGeral (se existirem no banco)
+            cursor = self.conn.cursor()
+            try:
+                cursor.execute(SQL_REMOVE_SYNC_TRIGGERS)
+                while cursor.nextset():
+                    pass
+            finally:
+                cursor.close()
 
             self._progresso(2, "Carregando planilha...")
             wb = load_workbook(arquivo_excel, data_only=True, read_only=True)

@@ -6,6 +6,25 @@ SQL para importacao em lote.
 """
 
 # ----------------------------------------------------------------
+# Remove triggers de SyncGeral (obsoleta em novos bancos)
+# Dropa qualquer trigger DML que referencie SyncGeral, em qualquer tabela.
+# Seguro: so executa se a tabela SyncGeral existir.
+# ----------------------------------------------------------------
+SQL_REMOVE_SYNC_TRIGGERS = """
+IF OBJECT_ID('dbo.SyncGeral', 'U') IS NOT NULL
+BEGIN
+    DECLARE @sql NVARCHAR(MAX) = N''
+    SELECT @sql = @sql + N'DROP TRIGGER IF EXISTS [dbo].' + QUOTENAME(t.name) + N';'
+    FROM sys.triggers t
+    INNER JOIN sys.sql_modules m ON t.object_id = m.object_id
+    WHERE m.definition LIKE N'%SyncGeral%'
+      AND t.type = 'TR'
+    IF LEN(@sql) > 0
+        EXEC sp_executesql @sql
+END
+"""
+
+# ----------------------------------------------------------------
 # Staging table: recebe os dados do Python via fast_executemany
 # ----------------------------------------------------------------
 SQL_CREATE_STAGING = """
