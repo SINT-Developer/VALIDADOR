@@ -190,7 +190,7 @@ class PlanilhaImportador:
         return None
 
     # Campos onde valor 0 deve ser convertido para NULL (constraint > 0 OR NULL)
-    _ZERO_TO_NULL = {"@ddd", "@codtransportadora", "@codrepresentante", "@qtdetabela1", "@qtdetabela2", "@qtdetabela3", "@codfamilia", "@codestilo", "@qtdemultipla", "@qtdeminima", "@qtdeetiquetas", "@precotabela", "@desconto1", "@desconto2", "@desconto3", "@vlrminimopedido"}
+    _ZERO_TO_NULL = {"@ddd", "@codtransportadora", "@codrepresentante", "@qtdetabela1", "@qtdetabela2", "@qtdetabela3", "@codfamilia", "@codestilo", "@qtdemultipla", "@qtdeminima", "@qtdeetiquetas", "@precotabela", "@desconto1", "@desconto2", "@desconto3", "@vlrminimopedido", "@precotabela2", "@precotabela3", "@qtdeestoqueatual", "@qtdeestoquefuturo", "@limitedescindividual", "@multiplograde", "@descontograde"}
 
     # ==================== CONSTRAINTS CHECK DO BANCO ====================
     # Mapeamento das constraints CHECK para validacao pre-batch
@@ -1480,6 +1480,10 @@ class PlanilhaImportador:
                     valor = self._converter_valor(row[idx], tipo)
                     if isinstance(valor, str) and valor.strip() == "":
                         valor = None
+                    if isinstance(valor, str):
+                        valor = valor.replace("'", "")
+                        if not valor:
+                            valor = None
                     if col_name == "CNPJCPF" and valor:
                         valor = self._formatar_cnpjcpf(valor)
                     elif col_name == "CEP" and valor:
