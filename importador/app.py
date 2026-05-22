@@ -37,7 +37,7 @@ from motor import PlanilhaImportador
 from mapeamento import ORDEM_IMPORTACAO
 from planilha_validator import PlanilhaValidator
 
-APP_VERSION = "1.2.28"
+APP_VERSION = "1.2.29"
 VERSION_URL = "https://gist.githubusercontent.com/SINT-Developer/4005d983a51756ce108aef5f064f6c01/raw/importador_version.json"
 
 
@@ -277,13 +277,15 @@ class ImportadorApp:
             if novo_exe:
                 progress_window.destroy()
                 if aplicar_atualizacao(novo_exe):
-                    messagebox.showinfo(
-                        "Atualizando...",
-                        "O aplicativo sera fechado agora.\n\n"
-                        "Uma janela de atualizacao sera exibida automaticamente — "
-                        "aguarde ela concluir antes de abrir o Importador novamente."
-                    )
-                    self.root.destroy()
+                    def _encerrar():
+                        messagebox.showinfo(
+                            "Atualizando...",
+                            "O aplicativo sera fechado agora.\n\n"
+                            "Uma janela de atualizacao sera exibida automaticamente — "
+                            "aguarde ela concluir antes de abrir o Importador novamente."
+                        )
+                        os._exit(0)
+                    self.root.after(0, _encerrar)
                 else:
                     messagebox.showerror("Erro", "Nao foi possivel aplicar a atualizacao.")
             else:
