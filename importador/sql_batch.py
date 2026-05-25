@@ -340,15 +340,15 @@ BEGIN
       AND erro IS NULL
 
     -- 21. QtdeTabela1 > 0: PrecoTabela1 range
-    UPDATE #W SET erro = 'PrecoTabela1 deve estar entre 0,01 e 99999,99.'
+    UPDATE #W SET erro = 'PrecoTabela1 deve estar entre 0,01 e 999999,99.'
     WHERE qtdetabela1 IS NOT NULL AND qtdetabela1 > 0
-      AND (precotabela1 IS NULL OR precotabela1 < 0.01 OR precotabela1 > 99999.99)
+      AND (precotabela1 IS NULL OR precotabela1 < 0.01 OR precotabela1 > 999999.99)
       AND erro IS NULL
 
     -- 22. QtdeTabela1 > 0: PrecoTabela2 range
-    UPDATE #W SET erro = 'PrecoTabela2 deve estar entre 0,00 e 99999,99.'
+    UPDATE #W SET erro = 'PrecoTabela2 deve estar entre 0,00 e 999999,99.'
     WHERE qtdetabela1 IS NOT NULL AND qtdetabela1 > 0
-      AND (precotabela2 IS NULL OR precotabela2 < 0.00 OR precotabela2 > 99999.99)
+      AND (precotabela2 IS NULL OR precotabela2 < 0.00 OR precotabela2 > 999999.99)
       AND erro IS NULL
 
     -- 23. QtdeTabela1 > 0: PrecoTabela2 < PrecoTabela1
@@ -358,10 +358,10 @@ BEGIN
       AND erro IS NULL
 
     -- 24. QtdeTabela1 > 0: PrecoTabela3 range
-    UPDATE #W SET erro = 'PrecoTabela3 deve estar entre 0,00 e 99999,99.'
+    UPDATE #W SET erro = 'PrecoTabela3 deve estar entre 0,00 e 999999,99.'
     WHERE qtdetabela1 IS NOT NULL AND qtdetabela1 > 0
       AND precotabela3 IS NOT NULL
-      AND (precotabela3 < 0.00 OR precotabela3 > 99999.99)
+      AND (precotabela3 < 0.00 OR precotabela3 > 999999.99)
       AND erro IS NULL
 
     -- 25. QtdeTabela1 > 0: PrecoTabela3 < PrecoTabela2
@@ -395,23 +395,23 @@ BEGIN
       AND erro IS NULL
 
     -- 29. PrecoTabela1 range (sem QtdeTabela)
-    UPDATE #W SET erro = 'PrecoTabela1 deve estar entre 0,01 e 99999,99.'
+    UPDATE #W SET erro = 'PrecoTabela1 deve estar entre 0,01 e 999999,99.'
     WHERE COALESCE(qtdetabela1, 0) = 0
-      AND (precotabela1 IS NULL OR precotabela1 < 0.01 OR precotabela1 > 99999.99)
+      AND (precotabela1 IS NULL OR precotabela1 < 0.01 OR precotabela1 > 999999.99)
       AND erro IS NULL
 
     -- 30. PrecoTabela2 range (sem QtdeTabela)
-    UPDATE #W SET erro = 'PrecoTabela2 deve estar entre 0,00 e 99999,99.'
+    UPDATE #W SET erro = 'PrecoTabela2 deve estar entre 0,00 e 999999,99.'
     WHERE COALESCE(qtdetabela1, 0) = 0
       AND precotabela2 IS NOT NULL
-      AND (precotabela2 < 0.00 OR precotabela2 > 99999.99)
+      AND (precotabela2 < 0.00 OR precotabela2 > 999999.99)
       AND erro IS NULL
 
     -- 31. PrecoTabela3 range (sem QtdeTabela)
-    UPDATE #W SET erro = 'PrecoTabela3 deve estar entre 0,00 e 99999,99.'
+    UPDATE #W SET erro = 'PrecoTabela3 deve estar entre 0,00 e 999999,99.'
     WHERE COALESCE(qtdetabela1, 0) = 0
       AND precotabela3 IS NOT NULL
-      AND (precotabela3 < 0.00 OR precotabela3 > 99999.99)
+      AND (precotabela3 < 0.00 OR precotabela3 > 999999.99)
       AND erro IS NULL
 
     -- 32. PrecoTabela3 sem PrecoTabela2
