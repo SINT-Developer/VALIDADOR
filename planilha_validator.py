@@ -1811,9 +1811,12 @@ class PlanilhaValidator:
                 mensagens.append("Transportadora ausente")
             else:
                 nome_transp = self.get_valor_string(cell_transp)
-                if not nome_transp or len(nome_transp) > 20:
+                if not nome_transp:
                     cell_transp.fill = COR_ERRO
-                    mensagens.append("Transportadora inválida ou excede 20 caracteres")
+                    mensagens.append("Transportadora inválida")
+                elif len(nome_transp) > 20:
+                    cell_transp.fill = COR_ADVERTENCIA
+                    mensagens.append("Advertencia, 'Transportadora' excede 20 caracteres")
                 else:
                     cell_transp.fill = COR_VALIDO
                 if nome_transp in seen_nome:
