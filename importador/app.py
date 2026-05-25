@@ -76,21 +76,33 @@ def verificar_atualizacao():
 
 
 def baixar_atualizacao(download_url, callback_progresso=None):
-    """Baixa o novo executavel. Retorna o caminho do arquivo baixado ou None."""
+    """Baixa o novo executavel. Retorna (caminho, None) em sucesso ou (None, msg_erro)."""
     try:
         temp_dir = tempfile.gettempdir()
         temp_file = os.path.join(temp_dir, "Importador_SINT_update.exe")
 
-        def report_progress(block_num, block_size, total_size):
-            if callback_progresso and total_size > 0:
-                percent = int(block_num * block_size * 100 / total_size)
-                callback_progresso(min(percent, 100))
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
 
-        urllib.request.urlretrieve(download_url, temp_file, report_progress)
-        return temp_file
+        req = urllib.request.Request(download_url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=120, context=ctx) as response:
+            total_size = int(response.headers.get("Content-Length", 0))
+            downloaded = 0
+            with open(temp_file, "wb") as f:
+                while True:
+                    chunk = response.read(8192)
+                    if not chunk:
+                        break
+                    f.write(chunk)
+                    downloaded += len(chunk)
+                    if callback_progresso and total_size > 0:
+                        callback_progresso(min(int(downloaded * 100 / total_size), 100))
+
+        return temp_file, None
     except Exception as e:
         print(f"Erro ao baixar atualizacao: {e}")
-        return None
+        return None, str(e)
 
 
 def aplicar_atualizacao(novo_exe_path):
@@ -273,7 +285,7 @@ class ImportadorApp:
             progress_window.update()
 
         def fazer_download():
-            novo_exe = baixar_atualizacao(download_url, atualizar_progresso)
+            novo_exe, erro_dl = baixar_atualizacao(download_url, atualizar_progresso)
             if novo_exe:
                 progress_window.destroy()
                 if aplicar_atualizacao(novo_exe):
@@ -290,7 +302,7 @@ class ImportadorApp:
                     messagebox.showerror("Erro", "Nao foi possivel aplicar a atualizacao.")
             else:
                 progress_window.destroy()
-                messagebox.showerror("Erro", "Falha ao baixar a atualizacao.")
+                messagebox.showerror("Erro", f"Falha ao baixar a atualizacao.\n\n{erro_dl}")
 
         threading.Thread(target=fazer_download, daemon=True).start()
 
