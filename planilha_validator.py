@@ -2222,19 +2222,20 @@ class PlanilhaValidator:
             idx = header.get("DDD")
             if idx is not None:
                 cell_ddd = row[idx]
-                if cell_ddd.value is not None and str(cell_ddd.value).strip() != "":
+                raw_ddd = cell_ddd.value
+                if raw_ddd is None or str(raw_ddd).strip() in ("", "0"):
+                    cell_ddd.fill = COR_VALIDO
+                else:
                     try:
-                        ddd_val = int(float(str(cell_ddd.value).strip()))
-                        if not (11 <= ddd_val <= 99):
+                        ddd_val = int(float(str(raw_ddd).strip()))
+                        if ddd_val == 0 or (11 <= ddd_val <= 99):
+                            cell_ddd.fill = COR_VALIDO
+                        else:
                             cell_ddd.fill = COR_ERRO
                             mensagens.append("DDD inválido (deve ser entre 11 e 99)")
-                        else:
-                            cell_ddd.fill = COR_VALIDO
                     except (ValueError, TypeError):
                         cell_ddd.fill = COR_ERRO
                         mensagens.append("DDD inválido")
-                else:
-                    cell_ddd.fill = COR_VALIDO
             resultado_fill = self.determinar_fill_resultado(mensagens)
             for cell in row:
                 cell.fill = resultado_fill
