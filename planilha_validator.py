@@ -1696,7 +1696,7 @@ class PlanilhaValidator:
                     try:
                         valor_str = self.get_valor_string(cell_valor)
                         valor_float = float(valor_str.replace(",", "."))
-                        if not (0.00 <= valor_float <= 9999999999.99):
+                        if not (0.00 <= valor_float <= 999999999.99):
                             cell_valor.fill = COR_ERRO
                             mensagens.append("VlrMinimoPedido fora do intervalo")
                         else:
@@ -2219,6 +2219,22 @@ class PlanilhaValidator:
                 else:
                     # Se estiver em branco, é válido
                     cell_pt.fill = COR_VALIDO
+            idx = header.get("DDD")
+            if idx is not None:
+                cell_ddd = row[idx]
+                if cell_ddd.value is not None and str(cell_ddd.value).strip() != "":
+                    try:
+                        ddd_val = int(float(str(cell_ddd.value).strip()))
+                        if not (11 <= ddd_val <= 99):
+                            cell_ddd.fill = COR_ERRO
+                            mensagens.append("DDD inválido (deve ser entre 11 e 99)")
+                        else:
+                            cell_ddd.fill = COR_VALIDO
+                    except (ValueError, TypeError):
+                        cell_ddd.fill = COR_ERRO
+                        mensagens.append("DDD inválido")
+                else:
+                    cell_ddd.fill = COR_VALIDO
             resultado_fill = self.determinar_fill_resultado(mensagens)
             for cell in row:
                 cell.fill = resultado_fill
@@ -2911,7 +2927,7 @@ class PlanilhaValidator:
                             cell_pt1.fill = COR_ERRO
                             mensagens.append("PrecoTabela1 inválido (valor zero ou negativo)")
                             pt1_val = None
-                        elif pt1_val > 999999.99:
+                        elif pt1_val > 99999.99:
                             cell_pt1.fill = COR_ERRO
                             mensagens.append("PrecoTabela1 fora do intervalo")
                             pt1_val = None
@@ -2938,7 +2954,7 @@ class PlanilhaValidator:
                             cell_pt1.value = converted_value  # Atualiza a célula com formato correto
                             pt1_val = float(converted_value.replace(",", "."))
 
-                            if not (0.01 <= pt1_val <= 999999.99):
+                            if not (0.01 <= pt1_val <= 99999.99):
                                 cell_pt1.fill = COR_ERRO
                                 mensagens.append("PrecoTabela1 fora do intervalo")
                                 pt1_val = None
@@ -2971,7 +2987,7 @@ class PlanilhaValidator:
                                 cell_pt2.fill = COR_ERRO
                                 mensagens.append("PrecoTabela2 inválido (valor zero ou negativo)")
                                 pt2_val = None
-                            elif pt2_val > 999999.99:
+                            elif pt2_val > 99999.99:
                                 cell_pt2.fill = COR_ERRO
                                 mensagens.append("PrecoTabela2 fora do intervalo")
                                 pt2_val = None
@@ -3003,7 +3019,7 @@ class PlanilhaValidator:
                                 cell_pt2.value = converted_value  # Atualiza a célula com formato correto
                                 pt2_val = float(converted_value.replace(",", "."))
 
-                                if not (0.01 <= pt2_val <= 999999.99):
+                                if not (0.01 <= pt2_val <= 99999.99):
                                     cell_pt2.fill = COR_ERRO
                                     mensagens.append("PrecoTabela2 fora do intervalo")
                                     pt2_val = None
@@ -3041,7 +3057,7 @@ class PlanilhaValidator:
                                 cell_pt3.fill = COR_ERRO
                                 mensagens.append("PrecoTabela3 inválido (valor zero ou negativo)")
                                 pt3_val = None
-                            elif pt3_val > 999999.99:
+                            elif pt3_val > 99999.99:
                                 cell_pt3.fill = COR_ERRO
                                 mensagens.append("PrecoTabela3 fora do intervalo")
                                 pt3_val = None
@@ -3073,7 +3089,7 @@ class PlanilhaValidator:
                                 cell_pt3.value = converted_value  # Atualiza a célula com formato correto
                                 pt3_val = float(converted_value.replace(",", "."))
 
-                                if not (0.01 <= pt3_val <= 999999.99):
+                                if not (0.01 <= pt3_val <= 99999.99):
                                     cell_pt3.fill = COR_ERRO
                                     mensagens.append("PrecoTabela3 fora do intervalo")
                                     pt3_val = None
