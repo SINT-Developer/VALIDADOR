@@ -3,17 +3,13 @@ from tkinter import filedialog, messagebox, ttk
 import os
 import sys
 import threading
-from datetime import datetime
-from pathlib import Path
-from io import BytesIO
-import shutil
 import urllib.request
 import json
 import tempfile
 import subprocess
 
 # Versao do aplicativo
-APP_VERSION = "1.0.25"
+APP_VERSION = "1.0.26"
 VERSION_URL = "https://gist.githubusercontent.com/SINT-Developer/a38baad856a6149526948d7c0c360ab9/raw/version.json"
 
 # Importar o validador
@@ -192,12 +188,14 @@ class ValidadorApp:
             if novo_exe:
                 progress_window.destroy()
                 if aplicar_atualizacao(novo_exe):
-                    messagebox.showinfo(
-                        "Atualização Concluída",
-                        "A atualização foi aplicada com sucesso!\n\n"
-                        "O aplicativo será fechado. Por favor, abra-o novamente para usar a nova versão."
-                    )
-                    self.root.destroy()  # Fecha o app para o batch substituir
+                    def _encerrar():
+                        messagebox.showinfo(
+                            "Atualização Concluída",
+                            "A atualização foi aplicada com sucesso!\n\n"
+                            "O aplicativo será fechado. Por favor, abra-o novamente para usar a nova versão."
+                        )
+                        os._exit(0)
+                    self.root.after(0, _encerrar)
                 else:
                     messagebox.showerror("Erro", "Não foi possível aplicar a atualização.")
             else:
@@ -205,6 +203,18 @@ class ValidadorApp:
                 messagebox.showerror("Erro", "Falha ao baixar a atualização.")
 
         threading.Thread(target=fazer_download, daemon=True).start()
+
+    def _set_widgets_state(self, state):
+        def toggle(parent):
+            for child in parent.winfo_children():
+                if isinstance(child, (ttk.Button, ttk.Entry, ttk.Checkbutton, ttk.Radiobutton,
+                                      tk.Button, tk.Entry, tk.Checkbutton, tk.Radiobutton)):
+                    try:
+                        child.configure(state=state)
+                    except Exception:
+                        pass
+                toggle(child)
+        toggle(self.root)
 
     def setup_ui(self):
         # Frame principal
@@ -315,18 +325,7 @@ class ValidadorApp:
             messagebox.showerror("Erro", "Selecione uma planilha válida!")
             return
 
-        # Encontrar e desabilitar widgets interativos usando uma função recursiva
-        def disable_widgets(parent):
-            for child in parent.winfo_children():
-                if isinstance(child, (ttk.Button, ttk.Entry, ttk.Checkbutton, ttk.Radiobutton, tk.Button, tk.Entry, tk.Checkbutton, tk.Radiobutton)):
-                    try:
-                        child.configure(state="disabled")
-                    except:
-                        pass  # Ignore se o widget não suportar state
-                disable_widgets(child)  # Recursão para widgets filhos
-
-        # Desabilitar os controles interativos
-        disable_widgets(self.root)
+        self._set_widgets_state("disabled")
 
         self.status_var.set("Processando... Por favor, aguarde.")
         self.progress_var.set(10)
@@ -424,18 +423,7 @@ class ValidadorApp:
             elif gerar_etiq and etiquetas_result is None:
                 message += "\n\nPlanilha de etiquetas NÃO foi gerada: nenhuma linha com QtdeEtiquetas > 0 encontrada."
 
-            # Reabilitar interface usando a mesma abordagem recursiva
-            def enable_widgets(parent):
-                for child in parent.winfo_children():
-                    if isinstance(child, (ttk.Button, ttk.Entry, ttk.Checkbutton, ttk.Radiobutton, tk.Button, tk.Entry, tk.Checkbutton, tk.Radiobutton)):
-                        try:
-                            child.configure(state="normal")
-                        except:
-                            pass  # Ignore se o widget não suportar state
-                    enable_widgets(child)  # Recursão para widgets filhos
-
-            # Habilitar os controles interativos
-            enable_widgets(self.root)
+            self.root.after(0, lambda: self._set_widgets_state("normal"))
 
             # Exibir mensagem
             messagebox.showinfo("Validação Concluída", message)
@@ -452,19 +440,7 @@ class ValidadorApp:
                 "Erro", f"Ocorreu um erro durante a validação:\n{str(e)}"
             )
             self.status_var.set("Erro durante a validação.")
-
-            # Reabilitar interface usando a mesma abordagem recursiva
-            def enable_widgets(parent):
-                for child in parent.winfo_children():
-                    if isinstance(child, (ttk.Button, ttk.Entry, ttk.Checkbutton, ttk.Radiobutton, tk.Button, tk.Entry, tk.Checkbutton, tk.Radiobutton)):
-                        try:
-                            child.configure(state="normal")
-                        except:
-                            pass  # Ignore se o widget não suportar state
-                    enable_widgets(child)  # Recursão para widgets filhos
-
-            # Habilitar os controles interativos
-            enable_widgets(self.root)
+            self.root.after(0, lambda: self._set_widgets_state("normal"))
 
     def update_progress(self, value, message):
         # Atualizar a UI a partir de uma thread

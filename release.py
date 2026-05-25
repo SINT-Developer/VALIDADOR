@@ -117,6 +117,7 @@ def gerar_exe():
         "--windowed",
         "--icon=icon.ico",
         "--name", "Validador SINT",
+        "--hidden-import=xlwt",
         "validador_standalone.py"
     ]
 
@@ -327,9 +328,8 @@ def main():
     if not token:
         sys.exit(1)
 
-    # 2. Atualizar versao no codigo
-    if not atualizar_versao_codigo(nova_versao):
-        sys.exit(1)
+    # 2. Atualizar versao no codigo (ignora se ja esta na versao correta)
+    atualizar_versao_codigo(nova_versao)
 
     # 3. Gerar exe
     if not gerar_exe():
