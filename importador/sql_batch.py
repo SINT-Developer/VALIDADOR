@@ -14,7 +14,7 @@ SQL_REMOVE_SYNC_TRIGGERS = """
 IF OBJECT_ID('dbo.SyncGeral', 'U') IS NOT NULL
 BEGIN
     DECLARE @sql NVARCHAR(MAX) = N''
-    SELECT @sql = @sql + N'DROP TRIGGER IF EXISTS [dbo].' + QUOTENAME(t.name) + N';'
+    SELECT @sql = @sql + N'IF OBJECT_ID(N''[dbo].[' + t.name + N']'', N''TR'') IS NOT NULL DROP TRIGGER [dbo].[' + t.name + N'];'
     FROM sys.triggers t
     INNER JOIN sys.sql_modules m ON t.object_id = m.object_id
     WHERE m.definition LIKE N'%SyncGeral%'
