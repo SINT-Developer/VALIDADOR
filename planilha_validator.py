@@ -2231,11 +2231,11 @@ class PlanilhaValidator:
                         if ddd_val == 0 or (11 <= ddd_val <= 99):
                             cell_ddd.fill = COR_VALIDO
                         else:
-                            cell_ddd.fill = COR_ERRO
-                            mensagens.append("DDD inválido (deve ser entre 11 e 99)")
+                            cell_ddd.fill = COR_ADVERTENCIA
+                            mensagens.append("Advertencia, DDD fora do padrão (deve ser entre 11 e 99)")
                     except (ValueError, TypeError):
-                        cell_ddd.fill = COR_ERRO
-                        mensagens.append("DDD inválido")
+                        cell_ddd.fill = COR_ADVERTENCIA
+                        mensagens.append("Advertencia, DDD em formato inválida")
             resultado_fill = self.determinar_fill_resultado(mensagens)
             for cell in row:
                 cell.fill = resultado_fill
