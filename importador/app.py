@@ -311,28 +311,95 @@ class ImportadorApp:
     # ----------------------------------------------------------
 
     def _build_ui(self):
-        # Barra de status fixa na parte inferior (sempre visivel, mesmo na aba Logs)
+        # Barra de status fixa na parte inferior (sempre visivel, em qualquer aba)
         pf = ttk.Frame(self.root, padding=(5, 2, 5, 5))
         pf.pack(side=tk.BOTTOM, fill=tk.X)
         ttk.Progressbar(pf, variable=self.progress_var, maximum=100).pack(fill=tk.X)
         self.lbl_status = ttk.Label(pf, textvariable=self.status_var, font=("Arial", 9), anchor=tk.W)
         self.lbl_status.pack(fill=tk.X, pady=(2, 0))
 
-        # Notebook principal (abas: Importador / Logs)
+        # Notebook principal (abas: Validar / Importar / Logs)
         self.notebook_principal = ttk.Notebook(self.root)
         self.notebook_principal.pack(fill=tk.BOTH, expand=True, padx=5, pady=(5, 0))
 
         # =======================================================
-        # ABA 1: IMPORTADOR
+        # ABA 1: VALIDAR
+        # =======================================================
+        self.tab_validar = ttk.Frame(self.notebook_principal)
+        self.notebook_principal.add(self.tab_validar, text="Validar")
+        self._build_validar_tab()
+
+        # =======================================================
+        # ABA 2: IMPORTAR
         # =======================================================
         self.tab_importador = ttk.Frame(self.notebook_principal)
-        self.notebook_principal.add(self.tab_importador, text="Importador")
+        self.notebook_principal.add(self.tab_importador, text="Importar")
+        self._build_importar_tab()
 
+        # =======================================================
+        # ABA 3: LOGS
+        # =======================================================
+        self.tab_logs = ttk.Frame(self.notebook_principal)
+        self.notebook_principal.add(self.tab_logs, text="Logs")
+        self._build_logs_tab()
+
+    def _build_validar_tab(self):
+        """Aba independente: so valida a planilha, sem tocar em SQL Server."""
+        main = ttk.Frame(self.tab_validar, padding=8)
+        main.pack(fill=tk.BOTH, expand=True)
+        main.columnconfigure(0, weight=1)
+
+        ttk.Label(main, text="Validar Planilha", font=("Arial", 12, "bold")).grid(row=0, column=0, pady=(0, 5), sticky=tk.W)
+
+        # Arquivo
+        f = ttk.LabelFrame(main, text="Planilha", padding=4)
+        f.grid(row=1, column=0, sticky=tk.EW, pady=(0, 4))
+        f.columnconfigure(0, weight=1)
+        ttk.Entry(f, textvariable=self.file_path, state="readonly").grid(row=0, column=0, sticky=tk.EW, padx=(0, 5))
+        ttk.Button(f, text="Procurar", command=self._browse).grid(row=0, column=1)
+
+        # Opcoes de Validacao
+        f = ttk.LabelFrame(main, text="Opcoes de Validacao", padding=4)
+        f.grid(row=2, column=0, sticky=tk.EW, pady=(0, 4))
+
+        g1 = ttk.Frame(f)
+        g1.pack(fill=tk.X)
+        ttk.Label(g1, text="Versao SRPPWin:").pack(side=tk.LEFT)
+        ttk.Combobox(g1, textvariable=self.versao_srppwin,
+                    values=["19.1.5", "20.1.0"], state="readonly", width=8).pack(side=tk.LEFT, padx=(5, 0))
+
+        g2 = ttk.Frame(f)
+        g2.pack(fill=tk.X, pady=(6, 0))
+        ttk.Checkbutton(g2, text="Gerar novo arquivo (desmarcado = sobrescrever original)",
+                       variable=self.criar_novo_arquivo).pack(anchor=tk.W)
+        ttk.Checkbutton(g2, text="Gerar planilha de etiquetas (se houver QtdeEtiquetas > 0)",
+                       variable=self.gerar_etiquetas).pack(anchor=tk.W)
+
+        # Botao
+        bf = ttk.Frame(main, padding=8)
+        bf.grid(row=3, column=0, sticky=tk.EW, pady=(8, 6))
+        bf.columnconfigure(0, weight=1)
+
+        self.btn_validar = ttk.Button(
+            bf,
+            text="VALIDAR PLANILHA",
+            command=self._iniciar_validar
+        )
+        self.btn_validar.grid(row=0, column=0, sticky=tk.EW, ipady=8)
+
+        ttk.Label(main, text="Nao conecta ao SQL Server. Ao final, oferece a opcao de seguir para Importar.",
+                 font=("Arial", 8), foreground="gray").grid(row=4, column=0, pady=(4, 0), sticky=tk.W)
+
+        # Creditos
+        ttk.Label(main, text="Desenvolvido por SINT", font=("Arial", 8), foreground="gray").grid(
+            row=5, column=0, pady=(10, 0), sticky=tk.E)
+
+    def _build_importar_tab(self):
         main = ttk.Frame(self.tab_importador, padding=8)
         main.pack(fill=tk.BOTH, expand=True)
         main.columnconfigure(0, weight=1)
 
-        ttk.Label(main, text="Importador de Planilhas", font=("Arial", 12, "bold")).grid(row=0, column=0, pady=(0, 5), sticky=tk.W)
+        ttk.Label(main, text="Importar para o Banco", font=("Arial", 12, "bold")).grid(row=0, column=0, pady=(0, 5), sticky=tk.W)
 
         # Arquivo
         f = ttk.LabelFrame(main, text="Planilha", padding=4)
@@ -401,64 +468,32 @@ class ImportadorApp:
         ttk.Button(bf, text="Todas", command=lambda: self._set_abas(True), width=8).pack(side=tk.LEFT, padx=2)
         ttk.Button(bf, text="Nenhuma", command=lambda: self._set_abas(False), width=8).pack(side=tk.LEFT, padx=2)
 
-        # Opcoes de Validacao
-        f = ttk.LabelFrame(main, text="Opcoes de Validacao", padding=4)
-        f.grid(row=5, column=0, sticky=tk.EW, pady=(0, 4))
-
-        # Linha 1: Validar antes + Versao
-        g1 = ttk.Frame(f)
-        g1.pack(fill=tk.X)
-
-        ttk.Checkbutton(g1, text="Validar antes de importar", variable=self.validar_antes,
-                       command=self._toggle_opcoes_validacao).pack(side=tk.LEFT)
-
-        # Frame das opcoes de validacao (inicialmente oculto)
-        self.frame_opcoes_validacao = ttk.Frame(g1)
-
-        ttk.Label(self.frame_opcoes_validacao, text="Versao:").pack(side=tk.LEFT, padx=(15, 2))
-        ttk.Combobox(self.frame_opcoes_validacao, textvariable=self.versao_srppwin,
-                    values=["19.1.5", "20.1.0"], state="readonly", width=8).pack(side=tk.LEFT)
-
-        # Linha 2: Opcoes de arquivo (aparecem junto com validar)
-        self.frame_opcoes_arquivo = ttk.Frame(f)
-
-        ttk.Checkbutton(self.frame_opcoes_arquivo, text="Gerar novo arquivo (desmarcado = sobrescrever original)",
-                       variable=self.criar_novo_arquivo).pack(anchor=tk.W)
-        ttk.Checkbutton(self.frame_opcoes_arquivo, text="Gerar planilha de etiquetas (se houver QtdeEtiquetas > 0)",
-                       variable=self.gerar_etiquetas).pack(anchor=tk.W)
-
         # Opcoes Gerais
         f = ttk.LabelFrame(main, text="Opcoes Gerais", padding=4)
-        f.grid(row=6, column=0, sticky=tk.EW, pady=(0, 4))
+        f.grid(row=5, column=0, sticky=tk.EW, pady=(0, 4))
         g = ttk.Frame(f)
         g.pack(fill=tk.X)
 
+        ttk.Checkbutton(g, text="Validar antes de importar (usa as opcoes da aba Validar)",
+                       variable=self.validar_antes).pack(anchor=tk.W)
         ttk.Checkbutton(g, text="Excluir TUDO antes da importacao (backup automatico)",
-                       variable=self.excluir_tudo_var).pack(side=tk.LEFT)
+                       variable=self.excluir_tudo_var).pack(anchor=tk.W, pady=(4, 0))
 
         # Botao e Progresso
         bf = ttk.Frame(main, padding=8)
-        bf.grid(row=7, column=0, sticky=tk.EW, pady=(8, 6))
+        bf.grid(row=6, column=0, sticky=tk.EW, pady=(8, 6))
         bf.columnconfigure(0, weight=1)
 
         self.btn_importar = ttk.Button(
             bf,
             text="IMPORTAR",
-            command=self._iniciar
+            command=self._iniciar_importar
         )
         self.btn_importar.grid(row=0, column=0, sticky=tk.EW, ipady=8)
 
         # Creditos
         ttk.Label(main, text="Desenvolvido por SINT", font=("Arial", 8), foreground="gray").grid(
-            row=8, column=0, pady=(5, 0), sticky=tk.E)
-
-        # =======================================================
-        # ABA 2: LOGS
-        # =======================================================
-        self.tab_logs = ttk.Frame(self.notebook_principal)
-        self.notebook_principal.add(self.tab_logs, text="Logs")
-
-        self._build_logs_tab()
+            row=7, column=0, pady=(5, 0), sticky=tk.E)
 
     def _build_logs_tab(self):
         """Constroi a aba de Logs com 3 sub-abas (Resumo/Detalhes/Erros)."""
@@ -546,15 +581,6 @@ class ImportadorApp:
         else:
             self.frame_conexao_campos.pack_forget()
 
-    def _toggle_opcoes_validacao(self):
-        """Mostra/esconde as opcoes de validacao baseado no checkbox validar."""
-        if self.validar_antes.get():
-            self.frame_opcoes_validacao.pack(side=tk.LEFT)
-            self.frame_opcoes_arquivo.pack(fill=tk.X, pady=(5, 0))
-        else:
-            self.frame_opcoes_validacao.pack_forget()
-            self.frame_opcoes_arquivo.pack_forget()
-
     def _atualizar_resumo(self):
         """Atualiza o grid de resumo com os resultados."""
         for w in self.resumo_inner.winfo_children():
@@ -632,7 +658,7 @@ class ImportadorApp:
 
     def _mostrar_aba_logs(self):
         """Muda para a aba de Logs e sub-aba Detalhes."""
-        self.notebook_principal.select(1)
+        self.notebook_principal.select(self.tab_logs)
         self.notebook_logs.select(1)
 
     def _mostrar_erros(self):
@@ -811,6 +837,13 @@ class ImportadorApp:
             self.root.update_idletasks()
         self.root.after(0, _update)
 
+    def _progresso_validacao(self, value, message):
+        """Como _progresso, mas tambem registra cada etapa na aba Logs > Detalhes.
+        Usado so na validacao: as etapas sao poucas e ja vem throttled pelo
+        PlanilhaValidator, diferente do progresso de importacao (por linha)."""
+        self._progresso(value, message)
+        self._log_detalhe(message)
+
     def _set_widgets(self, parent, state):
         for child in parent.winfo_children():
             if isinstance(child, (ttk.Button, ttk.Entry, ttk.Checkbutton, ttk.Radiobutton,
@@ -822,10 +855,138 @@ class ImportadorApp:
             self._set_widgets(child, state)
 
     # ----------------------------------------------------------
-    # Importacao
+    # Validacao (compartilhada pelas abas Validar e Importar)
     # ----------------------------------------------------------
 
-    def _iniciar(self):
+    def _rodar_validacao_planilha(self, arquivo):
+        """Executa a validacao da planilha e retorna um dict com o resultado.
+        Usado tanto pela aba Validar quanto pelo 'Validar antes de importar'."""
+        self._progresso(2, "Carregando planilha em memoria...")
+        self._log_detalhe("=== VALIDACAO ===")
+        self._log_detalhe(f"Carregando: {os.path.basename(arquivo)} (aguarde...)")
+
+        validator = PlanilhaValidator(arquivo, progress_callback=self._progresso_validacao)
+        validator.versao_srppwin = self.versao_srppwin.get()
+        excel_data, nome_arquivo, status, resultados = validator.processar("Validacao Local")
+
+        # Determinar onde salvar com base na opcao do usuario
+        criar_novo = self.criar_novo_arquivo.get()
+        pasta_planilha = os.path.dirname(arquivo)
+
+        if criar_novo:
+            output_path = os.path.join(pasta_planilha, nome_arquivo)
+        else:
+            output_path = arquivo
+
+        # Salvar planilha validada
+        with open(output_path, "wb") as f:
+            f.write(excel_data.getbuffer())
+        self._log_detalhe(f"Planilha salva: {output_path}")
+
+        # Verificar se deve gerar planilha de etiquetas
+        gerar_etiq = self.gerar_etiquetas.get()
+        etiquetas_path = None
+        etiquetas_erro = None
+
+        if gerar_etiq:
+            try:
+                etiquetas_result = validator.gerar_planilha_etiquetas()
+                if etiquetas_result:
+                    etiquetas_data, etiquetas_nome = etiquetas_result
+                    etiquetas_path = os.path.join(pasta_planilha, etiquetas_nome)
+                    with open(etiquetas_path, "wb") as f:
+                        f.write(etiquetas_data.getbuffer())
+                    self._log_detalhe(f"Planilha de etiquetas: {etiquetas_path}")
+            except Exception as e:
+                etiquetas_erro = str(e)
+                self._log_detalhe(f"ERRO ao gerar etiquetas: {etiquetas_erro}")
+
+        # Status da validacao
+        status_text = {
+            "aprovado": "APROVADO",
+            "advertencias": "APROVADO COM ADVERTENCIAS",
+            "reprovado": "REPROVADO",
+        }.get(status, "Validacao completa")
+
+        self._log_detalhe(f"Status: {status_text}")
+
+        # Montar mensagem de resultado
+        msg_resultado = f"Validacao concluida: {status_text}\n\n"
+        if criar_novo:
+            msg_resultado += f"Arquivo salvo em:\n{output_path}"
+        else:
+            msg_resultado += f"Arquivo atualizado:\n{output_path}"
+
+        if etiquetas_path:
+            msg_resultado += f"\n\nPlanilha de etiquetas:\n{etiquetas_path}"
+        elif gerar_etiq and etiquetas_erro:
+            msg_resultado += f"\n\nERRO ao gerar etiquetas:\n{etiquetas_erro}"
+        elif gerar_etiq:
+            msg_resultado += "\n\nPlanilha de etiquetas NAO gerada: nenhuma linha com QtdeEtiquetas > 0."
+
+        return {
+            "status": status,
+            "status_text": status_text,
+            "output_path": output_path,
+            "mensagem": msg_resultado,
+        }
+
+    # ----------------------------------------------------------
+    # Aba Validar
+    # ----------------------------------------------------------
+
+    def _iniciar_validar(self):
+        arquivo = self.file_path.get()
+        if not arquivo or not os.path.isfile(arquivo):
+            messagebox.showerror("Erro", "Selecione um arquivo valido.")
+            return
+
+        self._limpar_logs()
+        self._mostrar_aba_logs()
+
+        self._set_widgets(self.root, "disabled")
+        self.progress_var.set(0)
+
+        threading.Thread(target=self._executar_validar, args=(arquivo,), daemon=True).start()
+
+    def _executar_validar(self, arquivo):
+        try:
+            resultado = self._rodar_validacao_planilha(arquivo)
+            self._progresso(100, f"Validacao concluida: {resultado['status_text']}")
+
+            if resultado["status"] == "reprovado":
+                self.root.after(0, lambda: messagebox.showerror("Validacao Reprovada", resultado["mensagem"]))
+                return
+
+            resposta = [None]
+            def _ask():
+                resposta[0] = messagebox.askyesno(
+                    "Validacao Concluida",
+                    resultado["mensagem"] + "\n\nDeseja importar os dados agora?")
+            self.root.after(0, _ask)
+            while resposta[0] is None:
+                time.sleep(0.1)
+
+            if resposta[0]:
+                # Aponta a aba Importar para o arquivo ja validado/corrigido
+                self.file_path.set(resultado["output_path"])
+                self.root.after(0, lambda: self.notebook_principal.select(self.tab_importador))
+            else:
+                self._log_detalhe("Fluxo encerrado apos a validacao.")
+
+        except Exception as e:
+            self._log_detalhe(f"ERRO FATAL: {e}")
+            import traceback
+            traceback.print_exc()
+            self.root.after(0, lambda: messagebox.showerror("Erro", str(e)))
+        finally:
+            self.root.after(0, lambda: self._set_widgets(self.root, "normal"))
+
+    # ----------------------------------------------------------
+    # Aba Importar
+    # ----------------------------------------------------------
+
+    def _iniciar_importar(self):
         arquivo = self.file_path.get()
         if not arquivo or not os.path.isfile(arquivo):
             messagebox.showerror("Erro", "Selecione um arquivo valido.")
@@ -868,79 +1029,19 @@ class ImportadorApp:
         self._set_widgets(self.root, "disabled")
         self.progress_var.set(0)
 
-        threading.Thread(target=self._executar, args=(arquivo, abas), daemon=True).start()
+        threading.Thread(target=self._executar_importar, args=(arquivo, abas), daemon=True).start()
 
-    def _executar(self, arquivo, abas):
+    def _executar_importar(self, arquivo, abas):
         try:
             # Pre-validacao (se marcada)
             if self.validar_antes.get():
-                self._progresso(2, "Carregando planilha em memoria...")
-                self._log_detalhe("=== PRE-VALIDACAO ===")
-                self._log_detalhe(f"Carregando: {os.path.basename(arquivo)} (aguarde...)")
-
-                validator = PlanilhaValidator(arquivo, progress_callback=self._progresso)
-                validator.versao_srppwin = self.versao_srppwin.get()
-                excel_data, nome_arquivo, status, resultados = validator.processar("Validacao Local")
-
-                # Determinar onde salvar com base na opcao do usuario
-                criar_novo = self.criar_novo_arquivo.get()
-                pasta_planilha = os.path.dirname(arquivo)
-
-                if criar_novo:
-                    output_path = os.path.join(pasta_planilha, nome_arquivo)
-                else:
-                    output_path = arquivo
-
-                # Salvar planilha validada
-                with open(output_path, "wb") as f:
-                    f.write(excel_data.getbuffer())
-                self._log_detalhe(f"Planilha salva: {output_path}")
-
-                # Verificar se deve gerar planilha de etiquetas
-                gerar_etiq = self.gerar_etiquetas.get()
-                etiquetas_path = None
-                etiquetas_erro = None
-
-                if gerar_etiq:
-                    try:
-                        etiquetas_result = validator.gerar_planilha_etiquetas()
-                        if etiquetas_result:
-                            etiquetas_data, etiquetas_nome = etiquetas_result
-                            etiquetas_path = os.path.join(pasta_planilha, etiquetas_nome)
-                            with open(etiquetas_path, "wb") as f:
-                                f.write(etiquetas_data.getbuffer())
-                            self._log_detalhe(f"Planilha de etiquetas: {etiquetas_path}")
-                    except Exception as e:
-                        etiquetas_erro = str(e)
-                        self._log_detalhe(f"ERRO ao gerar etiquetas: {etiquetas_erro}")
-
-                # Status da validacao
-                status_text = {
-                    "aprovado": "APROVADO",
-                    "advertencias": "APROVADO COM ADVERTENCIAS",
-                    "reprovado": "REPROVADO",
-                }.get(status, "Validacao completa")
-
-                self._log_detalhe(f"Status: {status_text}")
-
-                # Montar mensagem de resultado
-                msg_resultado = f"Validacao concluida: {status_text}\n\n"
-                if criar_novo:
-                    msg_resultado += f"Arquivo salvo em:\n{output_path}"
-                else:
-                    msg_resultado += f"Arquivo atualizado:\n{output_path}"
-
-                if etiquetas_path:
-                    msg_resultado += f"\n\nPlanilha de etiquetas:\n{etiquetas_path}"
-                elif gerar_etiq and etiquetas_erro:
-                    msg_resultado += f"\n\nERRO ao gerar etiquetas:\n{etiquetas_erro}"
-                elif gerar_etiq:
-                    msg_resultado += "\n\nPlanilha de etiquetas NAO gerada: nenhuma linha com QtdeEtiquetas > 0."
+                resultado = self._rodar_validacao_planilha(arquivo)
+                arquivo = resultado["output_path"]
 
                 # Se REPROVADO, bloqueia importacao
-                if status == "reprovado":
+                if resultado["status"] == "reprovado":
                     self._progresso(0, "Bloqueado - planilha reprovada")
-                    self.root.after(0, lambda: messagebox.showerror("Validacao Reprovada", msg_resultado))
+                    self.root.after(0, lambda: messagebox.showerror("Validacao Reprovada", resultado["mensagem"]))
                     return
 
                 # SEMPRE perguntar se quer importar apos validacao
@@ -948,7 +1049,7 @@ class ImportadorApp:
                 def _ask():
                     resposta[0] = messagebox.askyesno(
                         "Validacao Concluida",
-                        msg_resultado + "\n\nDeseja importar os dados agora?")
+                        resultado["mensagem"] + "\n\nDeseja importar os dados agora?")
                 self.root.after(0, _ask)
                 while resposta[0] is None:
                     time.sleep(0.1)
