@@ -9,6 +9,17 @@ import time
 import os
 from datetime import datetime
 from openpyxl import Workbook
+import re
+
+
+def _nome_arquivo_seguro(texto):
+    """Remove caracteres invalidos em nomes de arquivo do Windows (\\ / : * ? " < > |)
+    de um texto vindo livremente da planilha (ex: nome da empresa), para uso em
+    nomes de arquivo gerados automaticamente."""
+    if not texto:
+        return texto
+    return re.sub(r'[\\/:*?"<>|]', "-", str(texto)).strip()
+
 
 # Cores definidas
 COR_VALIDO = PatternFill(
@@ -3516,7 +3527,7 @@ class PlanilhaValidator:
                 sheet_etiquetas.col(col_idx).width = (width + 2) * 256
 
             # Define o nome do arquivo de etiquetas usando self.emp_nome e timestamp
-            nome_base = self.emp_nome if self.emp_nome and self.emp_nome.strip() else "erro"
+            nome_base = _nome_arquivo_seguro(self.emp_nome) if self.emp_nome and self.emp_nome.strip() else "erro"
             timestamp = datetime.now().strftime("%Y.%m.%d %H-%M")
             nome_arquivo = f"{timestamp}_{nome_base}_ETIQUETAS.xls"
 
@@ -3794,7 +3805,7 @@ class PlanilhaValidator:
 
         # Prepara o nome do arquivo
         timestamp = datetime.now().strftime("%Y.%m.%d %H-%M")
-        nome_arquivo = f"{timestamp}_{self.emp_nome}_IMPORTAÇÃO.xlsx"
+        nome_arquivo = f"{timestamp}_{_nome_arquivo_seguro(self.emp_nome)}_IMPORTAÇÃO.xlsx"
 
         # Salva o workbook em um buffer de memória
         from io import BytesIO

@@ -104,6 +104,7 @@ def aplicar_atualizacao(novo_exe_path):
         exe_nome = os.path.basename(exe_atual)
 
         batch_content = f'''@echo off
+title Validador SINT - Atualizacao
 echo Aguardando o aplicativo fechar...
 timeout /t 3 /nobreak >nul
 
@@ -120,28 +121,32 @@ timeout /t 1 /nobreak >nul
 
 copy /Y "{novo_exe_path}" "{exe_atual}"
 if errorlevel 1 (
-    echo Erro ao copiar arquivo. Tentando novamente...
+    echo Tentando novamente em 3 segundos...
     timeout /t 3 /nobreak >nul
     copy /Y "{novo_exe_path}" "{exe_atual}"
 )
 
 if errorlevel 1 (
-    echo ERRO: Nao foi possivel atualizar o aplicativo.
+    echo.
+    echo ERRO: Nao foi possivel substituir o arquivo.
+    echo Feche qualquer outra instancia do Validador e tente novamente.
     pause
-) else (
-    echo Atualizacao concluida com sucesso!
+    exit /b 1
 )
 
 del "{novo_exe_path}" 2>nul
 del "%~f0"
+
+echo.
+echo Atualizacao concluida com sucesso! Pode abrir o Validador SINT agora.
+pause
 '''
 
-        with open(batch_path, 'w') as f:
+        with open(batch_path, 'w', encoding='utf-8') as f:
             f.write(batch_content)
 
         # Executar o batch e fechar o app
-        subprocess.Popen(['cmd', '/c', batch_path],
-                        creationflags=subprocess.CREATE_NO_WINDOW)
+        subprocess.Popen(['cmd', '/c', batch_path])
         return True
     except Exception as e:
         print(f"Erro ao aplicar atualizacao: {e}")
