@@ -373,6 +373,7 @@ class PlanilhaValidator:
         self.pagto_cod_list = []  # CodCondPagamento (aba PAGTO)
         self.transp_dict = {}  # {CodTransportadora: Transportadora}
         self.familia_cod_list = []  # CodFamilia (aba FAMILIAS)
+        self.familia_multiplo_set = set()  # CodFamilia com MultiploFamilia preenchida (aba FAMILIAS)
         self.estilo_cod_list = []  # CodEstilo (aba ESTILOS)
 
     def _carregar_cache_imagens(self):
@@ -2317,11 +2318,12 @@ class PlanilhaValidator:
                 continue
             total_linhas += 1
             mensagens = []
+            cod_familia_valida = None
             # Se houver correções no cabeçalho, adiciona essa advertência para cada linha
             if header_warning:
                 mensagens.append(header_warning)
 
-                
+
             cell = self.get_mandatory_cell(row, header, "CodFamilia")
             if cell is None:
                 mensagens.append("CodFamilia ausente")
@@ -2332,6 +2334,7 @@ class PlanilhaValidator:
                     mensagens.append("CodFamilia inválido")
                 else:
                     cell.fill = COR_VALIDO
+                    cod_familia_valida = valor
                     if valor not in self.familia_cod_list:
                         self.familia_cod_list.append(valor)
             cell_fam = self.get_mandatory_cell(row, header, "Familia")
@@ -2349,6 +2352,8 @@ class PlanilhaValidator:
                     idx = header.get(campo)
                     cell_val = row[idx]
                     if cell_val.value:
+                        if campo == "MultiploFamilia" and cod_familia_valida is not None:
+                            self.familia_multiplo_set.add(cod_familia_valida)
                         try:
                             num = int(cell_val.value)
                             if not (1 <= num <= 999999):
@@ -2802,22 +2807,60 @@ class PlanilhaValidator:
                         cell_ce.fill = COR_VALIDO
                 else:
                     cell_ce.fill = COR_VALIDO
-            # Validar QtdeMultipla e QtdeMinima primeiro (regras simples)
-            for campo in ["QtdeMultipla", "QtdeMinima"]:
-                idx = header.get(campo)
-                if idx is not None:
-                    cell_q = row[idx]
-                    if cell_q.value:
-                        try:
-                            q_val = int(cell_q.value)
-                            if not (1 <= q_val <= 999999):
-                                cell_q.fill = COR_ERRO
-                                mensagens.append(f"{campo} fora do intervalo")
-                            else:
-                                cell_q.fill = COR_VALIDO
-                        except:
-                            cell_q.fill = COR_ERRO
-                            mensagens.append(f"{campo} inválido")
+            # Validar QtdeMultipla e QtdeMinima (individual + regras cruzadas)
+            idx_qmultipla = header.get("QtdeMultipla")
+            idx_qminima = header.get("QtdeMinima")
+            qmultipla_val = None
+            qminima_val = None
+            qmultipla_preenchida = False
+            qminima_preenchida = False
+
+            if idx_qmultipla is not None:
+                cell_qm = row[idx_qmultipla]
+                if cell_qm.value:
+                    qmultipla_preenchida = True
+                    try:
+                        qmultipla_val = int(cell_qm.value)
+                        if not (1 <= qmultipla_val <= 999999):
+                            cell_qm.fill = COR_ERRO
+                            mensagens.append("QtdeMultipla fora do intervalo")
+                            qmultipla_val = None
+                        else:
+                            cell_qm.fill = COR_VALIDO
+                    except:
+                        cell_qm.fill = COR_ERRO
+                        mensagens.append("QtdeMultipla inválido")
+
+            if idx_qminima is not None:
+                cell_qn = row[idx_qminima]
+                if cell_qn.value:
+                    qminima_preenchida = True
+                    try:
+                        qminima_val = int(cell_qn.value)
+                        if not (1 <= qminima_val <= 999999):
+                            cell_qn.fill = COR_ERRO
+                            mensagens.append("QtdeMinima fora do intervalo")
+                            qminima_val = None
+                        else:
+                            cell_qn.fill = COR_VALIDO
+                    except:
+                        cell_qn.fill = COR_ERRO
+                        mensagens.append("QtdeMinima inválido")
+
+            # Regra: se QtdeMultipla foi preenchida, QtdeMinima e obrigatoria, e precisa
+            # ser multipla exata dela (o que ja garante QtdeMinima >= QtdeMultipla)
+            if qmultipla_preenchida and not qminima_preenchida and idx_qminima is not None:
+                row[idx_qminima].fill = COR_ERRO
+                mensagens.append("QtdeMinima ausente: obrigatória quando QtdeMultipla é preenchida")
+            elif qmultipla_val is not None and qminima_val is not None and qminima_val % qmultipla_val != 0:
+                row[idx_qminima].fill = COR_ERRO
+                mensagens.append("QtdeMinima inválido: precisa ser maior ou igual e múltipla de QtdeMultipla")
+
+            # Regra: nao pode usar Quantidade Multipla no Produto e na Familia ao mesmo tempo
+            if qmultipla_preenchida and idx_codfamilia is not None:
+                if cfam_val and cfam_val in self.familia_multiplo_set:
+                    row[idx_qmultipla].fill = COR_ERRO
+                    mensagens.append("QtdeMultipla inválido: não é permitido usar Quantidade Múltipla no Produto e na Família ao mesmo tempo")
 
             # Nova lógica para QtdeTabela1, QtdeTabela2, QtdeTabela3
             qtde1_idx = header.get("QtdeTabela1")
