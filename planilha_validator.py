@@ -302,18 +302,24 @@ def corrigir_campo(cell, allowed_set):
 
 def split_text(text, limit=23):
     """
-    Divide um texto em duas partes, de forma que a primeira parte tenha até 'limit' caracteres,
-    sem cortar palavras no meio. Se o texto for menor ou igual a 'limit', retorna (texto, "").
-    Caso contrário, corta no último espaço antes de atingir o limite.
+    Divide um texto em duas partes, cada uma com até 'limit' caracteres,
+    sem cortar palavras no meio (corta no último espaço antes de atingir o
+    limite; se não houver espaço, corta exatamente no limite). A segunda
+    parte segue a mesma regra da primeira - se ainda sobrar texto depois
+    dela, o excedente é descartado (não há uma terceira linha).
     """
-    text = text.strip()
-    if len(text) <= limit:
-        return text, ""
-    pos = text.rfind(" ", 0, limit)
-    if pos == -1:
-        # Se não houver espaço, corta exatamente no limite
-        return text[:limit], text[limit:].strip()
-    return text[:pos], text[pos:].strip()
+    def _cortar(txt):
+        txt = txt.strip()
+        if len(txt) <= limit:
+            return txt, ""
+        pos = txt.rfind(" ", 0, limit)
+        if pos == -1:
+            return txt[:limit], txt[limit:].strip()
+        return txt[:pos], txt[pos:].strip()
+
+    linha1, resto = _cortar(text)
+    linha2, _resto_descartado = _cortar(resto)
+    return linha1, linha2
 
 
 
@@ -350,7 +356,9 @@ class PlanilhaValidator:
             # Fallback: usar workbook original e converter manualmente
             self.wb = load_workbook(arquivo)
             self.converter_formulas_para_valores()
-        
+
+        self._normalizar_nomes_abas()
+
         self.resultados_validacao = {}  # resumo por aba
 
         # Inicializa a variável de tempo estimado
@@ -375,6 +383,22 @@ class PlanilhaValidator:
         self.familia_cod_list = []  # CodFamilia (aba FAMILIAS)
         self.familia_multiplo_set = set()  # CodFamilia com MultiploFamilia preenchida (aba FAMILIAS)
         self.estilo_cod_list = []  # CodEstilo (aba ESTILOS)
+
+    def _normalizar_nomes_abas(self):
+        """Corrige a caixa (maiúscula/minúscula) do nome das abas para o padrão
+        esperado (ex: 'Produtos' -> 'PRODUTOS'), pois o resto do código busca
+        as abas pelo nome exato em maiúsculas."""
+        nomes_canonicos = ["EMPRESA"] + list(CABECALHOS_ESPERADOS.keys())
+        canonicos_por_upper = {nome.upper(): nome for nome in nomes_canonicos}
+        for sheet_name in list(self.wb.sheetnames):
+            nome_canonico = canonicos_por_upper.get(sheet_name.strip().upper())
+            if nome_canonico and sheet_name != nome_canonico and nome_canonico not in self.wb.sheetnames:
+                ws = self.wb[sheet_name]
+                # Renomeia em dois passos: o openpyxl trata nomes de aba como
+                # case-insensitive unicos e recusa "Produtos" -> "PRODUTOS"
+                # direto (vira "PRODUTOS1"), pois ve como duplicata de si mesma.
+                ws.title = f"~~tmp~~{nome_canonico}"
+                ws.title = nome_canonico
 
     def _carregar_cache_imagens(self):
         """

@@ -61,6 +61,21 @@ class PlanilhaImportador:
         if self.progress_callback:
             self.progress_callback(percentual, mensagem)
 
+    def _normalizar_nomes_abas(self, wb):
+        """Corrige a caixa (maiuscula/minuscula) do nome das abas para o padrao
+        esperado (ex: 'Produtos' -> 'PRODUTOS'), pois o resto do codigo busca
+        as abas pelo nome exato em maiusculas."""
+        canonicos_por_upper = {nome.upper(): nome for nome in ORDEM_IMPORTACAO}
+        for sheet_name in list(wb.sheetnames):
+            nome_canonico = canonicos_por_upper.get(sheet_name.strip().upper())
+            if nome_canonico and sheet_name != nome_canonico and nome_canonico not in wb.sheetnames:
+                ws = wb[sheet_name]
+                # Renomeia em dois passos: o openpyxl trata nomes de aba como
+                # case-insensitive unicos e recusa "Produtos" -> "PRODUTOS"
+                # direto (vira "PRODUTOS1"), pois ve como duplicata de si mesma.
+                ws.title = f"~~tmp~~{nome_canonico}"
+                ws.title = nome_canonico
+
     # ----------------------------------------------------------
     # Conexao
     # ----------------------------------------------------------
@@ -1746,6 +1761,7 @@ class PlanilhaImportador:
 
             self._progresso(2, "Carregando planilha...")
             wb = load_workbook(arquivo_excel, data_only=True, read_only=True)
+            self._normalizar_nomes_abas(wb)
             self._log(f"Planilha: {os.path.basename(arquivo_excel)}")
 
             # ============================================================
