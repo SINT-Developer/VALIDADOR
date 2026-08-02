@@ -150,6 +150,35 @@ def convert_price_to_comma_format(value_str):
     return converted, (converted != original_str)
 
 
+def normalizar_qtde_inteira(valor_raw):
+    """
+    Converte um valor de quantidade (ex: colunas QtdeEstoqueAtual/QtdeEstoqueFuturo)
+    que pode vir com separador decimal (',' ou '.') para um número inteiro puro.
+    Reaproveita convert_price_to_comma_format para lidar corretamente com
+    separador de milhar x separador decimal (ex: "1.000" -> 1000, "10,00" -> 10).
+
+    Retorna (valor_int, texto_original, foi_corrigido) ou (None, texto_original, False)
+    se o valor não puder ser interpretado como número.
+    """
+    if isinstance(valor_raw, bool):
+        return None, str(valor_raw), False
+    if isinstance(valor_raw, int):
+        return valor_raw, str(valor_raw), False
+    if isinstance(valor_raw, float):
+        val_int = int(round(valor_raw))
+        return val_int, str(valor_raw), (val_int != valor_raw)
+
+    texto = str(valor_raw).strip()
+    if texto.lstrip("-").isdigit():
+        return int(texto), texto, False
+    try:
+        convertido, _ = convert_price_to_comma_format(texto)
+        val_int = int(convertido.split(",")[0])
+        return val_int, texto, True
+    except (ValueError, AttributeError, IndexError):
+        return None, texto, False
+
+
 def tentar_avaliar_formula_simples(formula_str):
     """
     Tenta avaliar fórmulas muito simples como =A1*B1, =100+50, etc.
@@ -3267,33 +3296,39 @@ class PlanilhaValidator:
             if idx is not None:
                 cell_qea = row[idx]
                 if cell_qea.value:
-                    try:
-                        qea_val = int(cell_qea.value)
+                    qea_val, texto_original, foi_corrigido = normalizar_qtde_inteira(cell_qea.value)
+                    if qea_val is None:
+                        cell_qea.fill = COR_ERRO
+                        mensagens.append("QtdeEstoqueAtual inválido")
+                    else:
+                        if foi_corrigido:
+                            cell_qea.value = qea_val
+                            mensagens.append(f"Advertencia: QtdeEstoqueAtual corrigido de '{texto_original}' para '{qea_val}'")
                         if not (1 <= qea_val <= 999999):
                             cell_qea.fill = COR_ERRO
                             mensagens.append("QtdeEstoqueAtual fora do intervalo")
                         else:
                             cell_qea.fill = COR_VALIDO
-                    except:
-                        cell_qea.fill = COR_ERRO
-                        mensagens.append("QtdeEstoqueAtual inválido")
             idx = header.get("QtdeEstoqueFuturo")
             if idx is not None:
                 cell_qef = row[idx]
                 if cell_qef.value:
-                    try:
-                        qef_val = int(cell_qef.value)
-                        if qef_val == 0:
-                            cell_qef.value = ""
-                            cell_qef.fill = COR_VALIDO
-                        elif not (1 <= qef_val <= 999999):
+                    qef_val, texto_original, foi_corrigido = normalizar_qtde_inteira(cell_qef.value)
+                    if qef_val is None:
+                        cell_qef.fill = COR_ERRO
+                        mensagens.append("QtdeEstoqueFuturo inválido")
+                    elif qef_val == 0:
+                        cell_qef.value = ""
+                        cell_qef.fill = COR_VALIDO
+                    else:
+                        if foi_corrigido:
+                            cell_qef.value = qef_val
+                            mensagens.append(f"Advertencia: QtdeEstoqueFuturo corrigido de '{texto_original}' para '{qef_val}'")
+                        if not (1 <= qef_val <= 999999):
                             cell_qef.fill = COR_ERRO
                             mensagens.append("QtdeEstoqueFuturo fora do intervalo")
                         else:
                             cell_qef.fill = COR_VALIDO
-                    except:
-                        cell_qef.fill = COR_ERRO
-                        mensagens.append("QtdeEstoqueFuturo inválido")
             idx = header.get("DtEstoqueFuturo")
             if idx is not None:
                 cell_data = row[idx]

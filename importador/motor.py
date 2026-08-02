@@ -149,7 +149,7 @@ class PlanilhaImportador:
             return None
         try:
             if tipo_sql in ("int", "smallint", "tinyint"):
-                val = int(float(val_str))
+                val = int(float(val_str.replace(",", ".")))
                 if tipo_sql == "tinyint" and not (0 <= val <= 255):
                     return None
                 return val
