@@ -2671,6 +2671,11 @@ class PlanilhaValidator:
         filial_valor_unico = filial_cod_list[0] if filial_unica else None
         familia_cod_set = set(self.familia_cod_list)  # Set para lookup O(1)
         estilo_cod_set = set(self.estilo_cod_list)    # Set para lookup O(1)
+        familia_multiplo_set = self.familia_multiplo_set
+        idx_qmultipla = header.get("QtdeMultipla")
+        idx_qminima = header.get("QtdeMinima")
+        idx_qtde_atual = header.get("QtdeEstoqueAtual")
+        idx_qtde_futuro = header.get("QtdeEstoqueFuturo")
 
         # OTIMIZAÇÃO: Função inline para obter valor string
         def get_val(cell):
@@ -2861,8 +2866,6 @@ class PlanilhaValidator:
                 else:
                     cell_ce.fill = COR_VALIDO
             # Validar QtdeMultipla e QtdeMinima (individual + regras cruzadas)
-            idx_qmultipla = header.get("QtdeMultipla")
-            idx_qminima = header.get("QtdeMinima")
             qmultipla_val = None
             qminima_val = None
             qmultipla_preenchida = False
@@ -2911,7 +2914,7 @@ class PlanilhaValidator:
 
             # Regra: nao pode usar Quantidade Multipla no Produto e na Familia ao mesmo tempo
             if qmultipla_preenchida and idx_codfamilia is not None:
-                if cfam_val and cfam_val in self.familia_multiplo_set:
+                if cfam_val and cfam_val in familia_multiplo_set:
                     row[idx_qmultipla].fill = COR_ERRO
                     mensagens.append("QtdeMultipla inválido: não é permitido usar Quantidade Múltipla no Produto e na Família ao mesmo tempo")
 
@@ -3292,11 +3295,14 @@ class PlanilhaValidator:
                     mensagens.append("TipoVendaSemEstoque inválido")
                 else:
                     cell_tv.fill = COR_VALIDO
-            idx = header.get("QtdeEstoqueAtual")
-            if idx is not None:
-                cell_qea = row[idx]
-                if cell_qea.value:
-                    qea_val, texto_original, foi_corrigido = normalizar_qtde_inteira(cell_qea.value)
+            if idx_qtde_atual is not None:
+                cell_qea = row[idx_qtde_atual]
+                val_raw = cell_qea.value
+                if val_raw:
+                    if type(val_raw) is int:
+                        qea_val, texto_original, foi_corrigido = val_raw, None, False
+                    else:
+                        qea_val, texto_original, foi_corrigido = normalizar_qtde_inteira(val_raw)
                     if qea_val is None:
                         cell_qea.fill = COR_ERRO
                         mensagens.append("QtdeEstoqueAtual inválido")
@@ -3309,11 +3315,14 @@ class PlanilhaValidator:
                             mensagens.append("QtdeEstoqueAtual fora do intervalo")
                         else:
                             cell_qea.fill = COR_VALIDO
-            idx = header.get("QtdeEstoqueFuturo")
-            if idx is not None:
-                cell_qef = row[idx]
-                if cell_qef.value:
-                    qef_val, texto_original, foi_corrigido = normalizar_qtde_inteira(cell_qef.value)
+            if idx_qtde_futuro is not None:
+                cell_qef = row[idx_qtde_futuro]
+                val_raw = cell_qef.value
+                if val_raw:
+                    if type(val_raw) is int:
+                        qef_val, texto_original, foi_corrigido = val_raw, None, False
+                    else:
+                        qef_val, texto_original, foi_corrigido = normalizar_qtde_inteira(val_raw)
                     if qef_val is None:
                         cell_qef.fill = COR_ERRO
                         mensagens.append("QtdeEstoqueFuturo inválido")
