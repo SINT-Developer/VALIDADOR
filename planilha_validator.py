@@ -21,6 +21,24 @@ def _nome_arquivo_seguro(texto):
     return re.sub(r'[\\/:*?"<>|]', "-", str(texto)).strip()
 
 
+def _max_row_real(sheet):
+    """Retorna a última linha que realmente contém algum valor, ignorando
+    linhas "fantasma" que inflam sheet.max_row - comum quando uma célula
+    distante foi tocada/estilizada sem valor (ex: formatação aplicada numa
+    coluna inteira), fazendo o openpyxl declarar um max_row perto do limite
+    do Excel (1.048.576) mesmo com poucos milhares de linhas reais.
+    Isso evita que loops que dependem de sheet.max_row varram milhões de
+    linhas vazias desnecessariamente."""
+    try:
+        max_real = 0
+        for (r, _c), cell in sheet._cells.items():
+            if cell.value is not None and r > max_real:
+                max_real = r
+        return max_real if max_real else sheet.max_row
+    except AttributeError:
+        return sheet.max_row
+
+
 # Cores definidas
 COR_VALIDO = PatternFill(
     start_color="00FF00", end_color="00FF00", fill_type="solid"
@@ -858,7 +876,7 @@ class PlanilhaValidator:
             return
         sheet.protection.sheet = False
         # OTIMIZAÇÃO: Aplicar borda apenas nas células com dados
-        max_row = sheet.max_row
+        max_row = _max_row_real(sheet)
         max_col = sheet.max_column
         if max_row <= 1 or max_col <= 0:
             return
@@ -923,7 +941,7 @@ class PlanilhaValidator:
                 new_merged.append(mcr)
             sheet.merged_cells.ranges = new_merged
 
-    def excluir_linhas_duplicadas_produtos(self, sheet, header):
+    def excluir_linhas_duplicadas_produtos(self, sheet, header, max_row=None):
         ignore_cols = set()
         for key, idx in header.items():
             if key.lower() in ["duplicados", "resultado"]:
@@ -932,12 +950,18 @@ class PlanilhaValidator:
         # OTIMIZAÇÃO: Verificação rápida de linha vazia usando CodProduto
         idx_codproduto = header.get("CodProduto")
 
-        print(f"  [excluir_duplicadas] Iterando linhas... max_row={sheet.max_row}")
+        # Usa a ultima linha REAL com dados (evita varrer linhas "fantasma"
+        # ate sheet.max_row, que pode estar inflado por celulas distantes
+        # tocadas/estilizadas sem valor - ver _max_row_real())
+        if max_row is None:
+            max_row = _max_row_real(sheet)
+
+        print(f"  [excluir_duplicadas] Iterando linhas... max_row={max_row} (sheet.max_row={sheet.max_row})")
         t0 = time.perf_counter()
         seen = {}
         rows_to_delete = []
         linhas_iteradas = 0
-        for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
+        for row in sheet.iter_rows(min_row=2, max_row=max_row):
             linhas_iteradas += 1
             if linhas_iteradas % 50000 == 0:
                 print(f"  [excluir_duplicadas] ...iterou {linhas_iteradas} linhas ({time.perf_counter() - t0:.1f}s)")
@@ -2557,7 +2581,8 @@ class PlanilhaValidator:
             return "Erro", "A aba PRODUTOS não foi encontrada!"
 
         sheet = self.wb["PRODUTOS"]
-        print(f"[PRODUTOS] sheet.max_row={sheet.max_row}, sheet.max_column={sheet.max_column}")
+        max_row_real = _max_row_real(sheet)
+        print(f"[PRODUTOS] sheet.max_row={sheet.max_row} (real={max_row_real}), sheet.max_column={sheet.max_column}")
         # Obtém o header atual da planilha, sem forçar uma ordem específica
         header = self.get_header_map(sheet)
         header_warning = ""
@@ -2565,7 +2590,7 @@ class PlanilhaValidator:
         # Excluir linhas duplicadas (linhas idênticas)
         print(f"[PRODUTOS] Iniciando excluir_linhas_duplicadas_produtos...")
         t_dup = time.perf_counter()
-        self.excluir_linhas_duplicadas_produtos(sheet, header)
+        self.excluir_linhas_duplicadas_produtos(sheet, header, max_row=max_row_real)
         print(f"[PRODUTOS] excluir_linhas_duplicadas_produtos concluido em {time.perf_counter() - t_dup:.2f}s (max_row agora={sheet.max_row})")
 
         # Excluir linhas vazias no meio dos dados (verifica 10 linhas à frente)
@@ -2583,7 +2608,7 @@ class PlanilhaValidator:
         idx_codaux = header.get("CodAuxiliarProduto")
         total_linhas_planilha = 0  # Contar linhas válidas reais
 
-        for row in sheet.iter_rows(min_row=2, max_row=sheet.max_row):
+        for row in sheet.iter_rows(min_row=2, max_row=max_row_real):
             # Verificação rápida de linha vazia
             if idx_codproduto is not None:
                 first_val = row[idx_codproduto].value
@@ -2684,7 +2709,7 @@ class PlanilhaValidator:
             v = cell.value
             return v.strip() if isinstance(v, str) else str(v).strip()
 
-        for row in sheet.iter_rows(min_row=2):
+        for row in sheet.iter_rows(min_row=2, max_row=max_row_real):
             # Verificação rápida de linha vazia
             if idx_codproduto is not None:
                 first_val = row[idx_codproduto].value
