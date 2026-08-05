@@ -1089,16 +1089,23 @@ class PlanilhaImportador:
 
         # 3. Ler configuracao de tamanho de codigo do banco para zero-padding
         tamanho_cod = None
+        tamanho_cod_aux = None
         try:
             c = self.conn.cursor()
-            c.execute("SELECT TipoCodProduto, TamanhoCodProduto FROM Empresa WHERE CodEmpresa = 1")
+            c.execute(
+                "SELECT TipoCodProduto, TamanhoCodProduto, TipoCodAuxProduto, TamanhoCodAuxProduto "
+                "FROM Empresa WHERE CodEmpresa = 1"
+            )
             row_emp = c.fetchone()
             c.close()
             if row_emp and row_emp[0] == "N" and row_emp[1]:
                 tamanho_cod = int(row_emp[1])
                 self._log(f"  TipoCodProduto=N, TamanhoCodProduto={tamanho_cod} (zero-padding ativo)")
+            if row_emp and row_emp[2] == "N" and row_emp[3]:
+                tamanho_cod_aux = int(row_emp[3])
+                self._log(f"  TipoCodAuxProduto=N, TamanhoCodAuxProduto={tamanho_cod_aux} (zero-padding ativo)")
         except Exception as e:
-            self._log(f"  AVISO: nao foi possivel ler TamanhoCodProduto: {e}")
+            self._log(f"  AVISO: nao foi possivel ler TamanhoCodProduto/TamanhoCodAuxProduto: {e}")
 
         # 4. Streaming em chunks: ler da planilha e inserir no staging em lotes
         col_order = [
@@ -1134,11 +1141,15 @@ class PlanilhaImportador:
                     valor = self._converter_valor(row[idx], col_type.get(col_name, "varchar"))
                     if isinstance(valor, str) and valor.strip() == "":
                         valor = None
-                    # Zero-padding: CodProduto numerico pode perder zeros a esquerda no openpyxl
+                    # Zero-padding: CodProduto/CodAuxiliarProduto numerico pode perder zeros a esquerda no openpyxl
                     if col_name == "CodProduto" and tamanho_cod and isinstance(valor, str):
                         digitos = ''.join(c for c in valor if c.isdigit())
                         if digitos == valor and len(valor) < tamanho_cod:
                             valor = valor.zfill(tamanho_cod)
+                    elif col_name == "CodAuxiliarProduto" and tamanho_cod_aux and isinstance(valor, str):
+                        digitos = ''.join(c for c in valor if c.isdigit())
+                        if digitos == valor and len(valor) < tamanho_cod_aux:
+                            valor = valor.zfill(tamanho_cod_aux)
                     param_name = col_sql_param.get(col_name, "")
                     if param_name in self._ZERO_TO_NULL and valor == 0:
                         valor = None
