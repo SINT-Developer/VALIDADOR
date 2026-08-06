@@ -3337,7 +3337,7 @@ class PlanilhaValidator:
                             mensagens.append(f"Advertencia: QtdeEstoqueAtual corrigido de '{texto_original}' para '{qea_val}'")
                         if not (1 <= qea_val <= 999999):
                             cell_qea.fill = COR_ERRO
-                            mensagens.append("QtdeEstoqueAtual fora do intervalo")
+                            mensagens.append("QtdeEstoqueAtual inválido (fora do intervalo permitido: 1 a 999999)")
                         else:
                             cell_qea.fill = COR_VALIDO
             if idx_qtde_futuro is not None:
@@ -3360,7 +3360,7 @@ class PlanilhaValidator:
                             mensagens.append(f"Advertencia: QtdeEstoqueFuturo corrigido de '{texto_original}' para '{qef_val}'")
                         if not (1 <= qef_val <= 999999):
                             cell_qef.fill = COR_ERRO
-                            mensagens.append("QtdeEstoqueFuturo fora do intervalo")
+                            mensagens.append("QtdeEstoqueFuturo inválido (fora do intervalo permitido: 1 a 999999)")
                         else:
                             cell_qef.fill = COR_VALIDO
             idx = header.get("DtEstoqueFuturo")
