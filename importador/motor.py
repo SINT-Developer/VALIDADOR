@@ -331,8 +331,8 @@ class PlanilhaImportador:
     # PRODUTOS
     "CodProduto": 20,
     "CodAuxiliarProduto": 20,
-    "Produto": 40,
-    "PathFotografia": 60,
+    "Produto": 45,
+    "PathFotografia": 200,
     "PrecoPromocional": 1,
     "TipoVendaSemEstoque": 1,
 }
@@ -847,7 +847,11 @@ class PlanilhaImportador:
             return None
         sheet = wb[nome_aba]
         for row in sheet.iter_rows(min_row=1, max_row=1, values_only=True):
-            return {name: idx for idx, name in enumerate(row) if name is not None}
+            return {
+                (name.strip() if isinstance(name, str) else name): idx
+                for idx, name in enumerate(row)
+                if name is not None
+            }
         return None
 
     def _ler_linhas_aba(self, wb, nome_aba):

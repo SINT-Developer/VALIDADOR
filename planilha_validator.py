@@ -86,7 +86,7 @@ CABECALHOS_ESPERADOS = {
                  "QtdeTabela3", "PrecoTabela1", "PrecoTabela2", "PrecoTabela3",
                  "LimiteDescIndividual", "MultiploGrade", "DescontoGrade", "PrecoPromocional",
                  "AliquotaIPI", "TipoVendaSemEstoque", "QtdeEstoqueAtual", "QtdeEstoqueFuturo",
-                 "DtEstoqueFuturo"],
+                 "DtEstoqueFuturo", "PathFotografia", "QtdeEtiquetas"],
 }
 
 # Dicionário de Estados (para aba ESTADOS)
@@ -838,7 +838,11 @@ class PlanilhaValidator:
 
     def get_header_map(self, sheet):
         header = [cell.value for cell in sheet[1]]
-        return {name: idx for idx, name in enumerate(header) if name is not None}
+        return {
+            name.strip() if isinstance(name, str) else name: idx
+            for idx, name in enumerate(header)
+            if name is not None
+        }
 
     def get_mandatory_cell(self, row, header, field):
         idx = header.get(field)
