@@ -724,27 +724,36 @@ class PlanilhaImportador:
 
     def _ler_config_tipo_codigo(self, wb):
         """
-        Le a configuracao de tipo de codigo da aba EMPRESA.
+        Le a configuracao de tipo/tamanho de codigo da aba EMPRESA.
         Celula C7: TipoCodProduto (N=Numerico, A=Alfanumerico)
+        Celula C8: TamanhoCodProduto
         Celula C10: TipoCodAuxiliarProduto (N=Numerico, A=Alfanumerico, X=Nao Usado)
-        Retorna (tipo_cod, tipo_aux) ou (None, None) se nao encontrar.
+        Celula C11: TamanhoCodAuxiliarProduto
+        Retorna (tipo_cod, tamanho_cod, tipo_aux, tamanho_aux), com None onde nao encontrar.
         """
         if "EMPRESA" not in wb.sheetnames:
-            return None, None
+            return None, None, None, None
 
         sheet = wb["EMPRESA"]
         tipo_cod = None
+        tamanho_cod = None
         tipo_aux = None
+        tamanho_aux = None
 
         # Ler por iter_rows (compativel com read_only=True)
-        # C7 = row 7 col 2 (0-indexed), C10 = row 10 col 2
-        for i, row in enumerate(sheet.iter_rows(min_row=1, max_row=10, values_only=True), 1):
+        # C7/C8 = row 7/8 col 2 (0-indexed), C10/C11 = row 10/11 col 2
+        for i, row in enumerate(sheet.iter_rows(min_row=1, max_row=11, values_only=True), 1):
             if i == 7 and len(row) > 2 and row[2]:
                 val = str(row[2]).strip().upper()
                 if val.startswith("N"):
                     tipo_cod = "N"
                 elif val.startswith("A"):
                     tipo_cod = "A"
+            elif i == 8 and len(row) > 2 and row[2] is not None:
+                try:
+                    tamanho_cod = int(row[2])
+                except (ValueError, TypeError):
+                    pass
             elif i == 10 and len(row) > 2 and row[2]:
                 val = str(row[2]).strip().upper()
                 if val.startswith("N"):
@@ -753,8 +762,13 @@ class PlanilhaImportador:
                     tipo_aux = "A"
                 elif val.startswith("X"):
                     tipo_aux = "X"
+            elif i == 11 and len(row) > 2 and row[2] is not None:
+                try:
+                    tamanho_aux = int(row[2])
+                except (ValueError, TypeError):
+                    pass
 
-        return tipo_cod, tipo_aux
+        return tipo_cod, tamanho_cod, tipo_aux, tamanho_aux
 
     def _valor_e_numerico(self, valor):
         """Verifica se um valor e puramente numerico (apenas digitos)."""
@@ -766,9 +780,10 @@ class PlanilhaImportador:
         # Remover espacos e verificar se so tem digitos
         return val.isdigit()
 
-    def _validar_tipos_codigo_produtos(self, wb, tipo_cod, tipo_aux):
+    def _validar_tipos_codigo_produtos(self, wb, tipo_cod, tamanho_cod, tipo_aux, tamanho_aux):
         """
-        Valida se os codigos na aba PRODUTOS sao compativeis com a configuracao.
+        Valida se os codigos na aba PRODUTOS sao compativeis com a configuracao
+        da EMPRESA: tipo (numerico/alfanumerico) e tamanho maximo.
         Usa streaming para nao carregar tudo na memoria.
         Retorna (ok, lista_erros).
         """
@@ -784,29 +799,41 @@ class PlanilhaImportador:
         for linha_idx, row in enumerate(sheet.iter_rows(min_row=2, values_only=True)):
             linha_excel = linha_idx + 2
 
-            if tipo_cod == "N" and idx_cod is not None:
+            if idx_cod is not None:
                 cod_val = row[idx_cod] if idx_cod < len(row) else None
                 if cod_val is not None and str(cod_val).strip():
-                    if not self._valor_e_numerico(cod_val):
+                    cod_str = str(cod_val).strip()
+                    if tipo_cod == "N" and not self._valor_e_numerico(cod_val):
                         erros.append(
                             f"Linha {linha_excel}: CodProduto '{cod_val}' e alfanumerico, "
                             f"mas configuracao EMPRESA (C7) diz N=Numerico"
                         )
-                        if len(erros) >= 10:
-                            erros.append("... (mais erros omitidos)")
-                            break
+                    elif tamanho_cod and len(cod_str) > tamanho_cod:
+                        erros.append(
+                            f"Linha {linha_excel}: CodProduto '{cod_val}' tem {len(cod_str)} caracteres, "
+                            f"maior que o TamanhoCodProduto configurado na EMPRESA (C8={tamanho_cod})"
+                        )
+                    if len(erros) >= 10:
+                        erros.append("... (mais erros omitidos)")
+                        break
 
-            if tipo_aux == "N" and idx_aux is not None:
+            if idx_aux is not None:
                 aux_val = row[idx_aux] if idx_aux < len(row) else None
                 if aux_val is not None and str(aux_val).strip():
-                    if not self._valor_e_numerico(aux_val):
+                    aux_str = str(aux_val).strip()
+                    if tipo_aux == "N" and not self._valor_e_numerico(aux_val):
                         erros.append(
                             f"Linha {linha_excel}: CodAuxiliarProduto '{aux_val}' e alfanumerico, "
                             f"mas configuracao EMPRESA (C10) diz N=Numerico"
                         )
-                        if len(erros) >= 10:
-                            erros.append("... (mais erros omitidos)")
-                            break
+                    elif tamanho_aux and len(aux_str) > tamanho_aux:
+                        erros.append(
+                            f"Linha {linha_excel}: CodAuxiliarProduto '{aux_val}' tem {len(aux_str)} caracteres, "
+                            f"maior que o TamanhoCodAuxiliarProduto configurado na EMPRESA (C11={tamanho_aux})"
+                        )
+                    if len(erros) >= 10:
+                        erros.append("... (mais erros omitidos)")
+                        break
 
         return len(erros) == 0, erros
 
@@ -1776,29 +1803,34 @@ class PlanilhaImportador:
             self._log(f"Planilha: {os.path.basename(arquivo_excel)}")
 
             # ============================================================
-            # PRE-VALIDACAO CRITICA: Tipo de Codigo (EMPRESA vs PRODUTOS)
+            # PRE-VALIDACAO CRITICA: Tipo/Tamanho de Codigo (EMPRESA vs PRODUTOS)
             # Se a configuracao diz "Numerico" mas os dados sao alfanumericos,
-            # a importacao inteira falharia depois. Melhor abortar agora.
+            # ou se o codigo excede o tamanho configurado, a importacao entra
+            # no banco sem erro mas quebra depois (ex: na exportacao). Melhor
+            # abortar agora.
             # ============================================================
             if "PRODUTOS" in abas_selecionadas:
                 self._progresso(3, "Validando configuracao de tipos de codigo...")
-                tipo_cod, tipo_aux = self._ler_config_tipo_codigo(wb)
-                self._log(f"  Config EMPRESA: TipoCodProduto={tipo_cod}, TipoCodAuxiliar={tipo_aux}")
+                tipo_cod, tamanho_cod, tipo_aux, tamanho_aux = self._ler_config_tipo_codigo(wb)
+                self._log(
+                    f"  Config EMPRESA: TipoCodProduto={tipo_cod} (tamanho={tamanho_cod}), "
+                    f"TipoCodAuxiliar={tipo_aux} (tamanho={tamanho_aux})"
+                )
 
-                if tipo_cod or tipo_aux:
-                    ok, erros_tipo = self._validar_tipos_codigo_produtos(wb, tipo_cod, tipo_aux)
+                if tipo_cod or tipo_aux or tamanho_cod or tamanho_aux:
+                    ok, erros_tipo = self._validar_tipos_codigo_produtos(wb, tipo_cod, tamanho_cod, tipo_aux, tamanho_aux)
                     if not ok:
                         self._log("=" * 60)
-                        self._log("ERRO CRITICO: Incompatibilidade de tipo de codigo!")
+                        self._log("ERRO CRITICO: Incompatibilidade de tipo/tamanho de codigo!")
                         self._log("=" * 60)
                         for erro in erros_tipo:
                             self._log(f"  {erro}")
                         self._log("")
-                        self._log("SOLUCAO: Corrija a configuracao na aba EMPRESA (C7/C10)")
+                        self._log("SOLUCAO: Corrija a configuracao na aba EMPRESA (C7/C8/C10/C11)")
                         self._log("         ou corrija os codigos na aba PRODUTOS.")
                         self._log("=" * 60)
                         wb.close()
-                        return {"ERRO_GERAL": "Tipo de codigo incompativel entre EMPRESA e PRODUTOS. Veja o log."}
+                        return {"ERRO_GERAL": "Tipo/tamanho de codigo incompativel entre EMPRESA e PRODUTOS. Veja o log."}
 
             if excluir_tudo:
                 self._progresso(3, "Excluindo todos os dados...")
