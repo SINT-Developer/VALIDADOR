@@ -3335,6 +3335,9 @@ class PlanilhaValidator:
                     if qea_val is None:
                         cell_qea.fill = COR_ERRO
                         mensagens.append("QtdeEstoqueAtual inválido")
+                    elif qea_val == 0:
+                        cell_qea.value = ""
+                        cell_qea.fill = COR_VALIDO
                     else:
                         if foi_corrigido:
                             cell_qea.value = qea_val
